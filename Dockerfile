@@ -9,6 +9,7 @@ COPY . /usr/src/app
 
 # Install our packages
 RUN npm install
+RUN npm run build
 
 #Expose our application port
 EXPOSE 3000
