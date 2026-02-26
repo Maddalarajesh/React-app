@@ -9,7 +9,7 @@ pipeline {
             stage('change directory') {
                 steps{
                     dir('React-app') {
-                        //steps within the specified directory
+                        //step within the specified directory
                     }
                 }
             }
