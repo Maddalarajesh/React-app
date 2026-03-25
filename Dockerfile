@@ -4,7 +4,7 @@ FROM node
 # Set the working dir when our container executes
 WORKDIR /usr/src/app
 
-# Copy the full of our application
+# Copy the full of our applications
 COPY . /usr/src/app
 
 # Install our packages
