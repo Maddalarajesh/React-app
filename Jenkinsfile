@@ -6,7 +6,7 @@ pipeline {
                     git branch: 'main', url: 'https://github.com/Maddalarajesh/React-app.git'
                 }
             }
-            stage('change directory') {
+            stage('change diretory') {
                 steps{
                     dir('React-app') {
                         
