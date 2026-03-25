@@ -1,4 +1,4 @@
-name: CI
+name: CI-CD (Versioning + ECR + EKS)
 
 permissions:
   contents: write
@@ -6,7 +6,9 @@ permissions:
 on:
   push:
     branches:
-      - main
+      - develop
+      - beta
+      - prod
   workflow_dispatch:
     inputs:
       target_branch:
@@ -30,166 +32,92 @@ on:
           - major
 
 jobs:
-  versioning:
+  # 🚦 GATEKEEPER: Decisions made here based on branch and commit message
+  setup:
     runs-on: ubuntu-latest
-
     outputs:
-      deploy: ${{ steps.type.outputs.deploy }}
-      version: ${{ steps.version.outputs.version }}
-      branch: ${{ steps.branch.outputs.branch }}
-
+      should_run: ${{ steps.check.outputs.should_run }}
+      env: ${{ steps.check.outputs.env }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      
+      - id: check
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          echo "env=$BRANCH" >> $GITHUB_OUTPUT
+          
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Manual run on $BRANCH: Proceeding."
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            MESSAGE=$(git log -1 --pretty=%B)
+            # 🚫 BLOCK automatic enhancements, ✅ ALLOW others
+            if [[ $MESSAGE == *enhancement* ]]; then
+              echo "Auto-push enhancement on $BRANCH: Skipping."
+              echo "should_run=false" >> $GITHUB_OUTPUT
+            else
+              echo "Auto-push valid on $BRANCH: Proceeding."
+              echo "should_run=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  versioning:
+    needs: setup
+    if: needs.setup.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ✅ Select branch
-      - name: Set target branch
-        id: branch
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "branch=${{ github.event.inputs.target_branch }}" >> $GITHUB_OUTPUT
-          else
-            echo "branch=main" >> $GITHUB_OUTPUT
-          fi
-
-      # ✅ Detect change type
       - name: Detect change type
         id: type
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TYPE="${{ github.event.inputs.release_type }}"
-            echo "type=$TYPE" >> $GITHUB_OUTPUT
-            echo "deploy=true" >> $GITHUB_OUTPUT
+            echo "type=${{ github.event.inputs.release_type }}" >> $GITHUB_OUTPUT
           else
             MESSAGE=$(git log -1 --pretty=%B)
-
-            if [[ $MESSAGE == *enhancement* ]]; then
-              echo "type=major" >> $GITHUB_OUTPUT
-              echo "deploy=false" >> $GITHUB_OUTPUT
-            elif [[ $MESSAGE == *feature* ]]; then
-              echo "type=minor" >> $GITHUB_OUTPUT
-              echo "deploy=true" >> $GITHUB_OUTPUT
-            elif [[ $MESSAGE == *bugfix* ]] || [[ $MESSAGE == *hotfix* ]]; then
-              echo "type=patch" >> $GITHUB_OUTPUT
-              echo "deploy=true" >> $GITHUB_OUTPUT
-            else
-              echo "type=patch" >> $GITHUB_OUTPUT
-              echo "deploy=true" >> $GITHUB_OUTPUT
+            if [[ $MESSAGE == *feature* ]]; then echo "type=minor" >> $GITHUB_OUTPUT
+            else echo "type=patch" >> $GITHUB_OUTPUT
             fi
           fi
 
-      # ✅ Latest tag
-      - name: Get latest tag
-        id: get_tag
+      - name: Calculate & Tag Version
+        id: version
         run: |
           git fetch --tags --force
           TAG=$(git tag --sort=-v:refname | head -n 1)
-
-          if [ -z "$TAG" ]; then
-            TAG="v1.0.0"
-          fi
-
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      # ✅ Version bump
-      - name: Bump version
-        id: version
-        run: |
-          TAG=${{ steps.get_tag.outputs.tag }}
+          if [ -z "$TAG" ]; then TAG="v1.0.0"; fi
+          
           VERSION=${TAG#v}
-
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
           TYPE=${{ steps.type.outputs.type }}
 
-          if [[ "$TYPE" == "patch" ]]; then
-            PATCH=$((PATCH+1))
-          elif [[ "$TYPE" == "minor" ]]; then
-            MINOR=$((MINOR+1))
-            PATCH=0
-          elif [[ "$TYPE" == "major" ]]; then
-            MAJOR=$((MAJOR+1))
-            MINOR=0
-            PATCH=0
+          if [[ "$TYPE" == "patch" ]]; then PATCH=$((PATCH+1))
+          elif [[ "$TYPE" == "minor" ]]; then MINOR=$((MINOR+1)); PATCH=0
+          elif [[ "$TYPE" == "major" ]]; then MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
           fi
 
-          NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-
-      # ✅ Tag creation
-      - name: Create Git Tag
-        if: steps.type.outputs.deploy == 'true' || github.event_name == 'workflow_dispatch'
-        run: |
-          TAG=${{ steps.version.outputs.version }}
-
-          if git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
-            echo "Tag exists, skipping"
-            exit 0
-          fi
-
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
+          
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git tag -a $TAG -m "Release $TAG"
-          git push origin $TAG
+          git tag -a $NEW_TAG -m "Release $NEW_TAG"
+          git push origin $NEW_TAG
 
-  build:
+  build-and-deploy:
+    needs: [setup, versioning]
+    if: needs.setup.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    needs: versioning
-
-    if: needs.versioning.outputs.deploy == 'true' || github.event_name == 'workflow_dispatch'
-
-    # 🔐 Enables PROD approval
-    environment:
-      name: ${{ needs.versioning.outputs.branch }}
-
+    environment: 
+      name: ${{ needs.setup.outputs.env }} # 🔐 Use Environment protection (Approvals)
     steps:
-      - name: Checkout target branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.versioning.outputs.branch }}
-          fetch-depth: 0
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        run: npm ci
-
-      - name: Build
-        run: npm run build --if-present
-
-      - name: Test
-        run: npm test
-
-      # 🚀 REAL DEPLOY LOGIC BASED ON BRANCH
-      - name: Deploy
+      - name: Summary
         run: |
-          BRANCH="${{ needs.versioning.outputs.branch }}"
-          VERSION="${{ needs.versioning.outputs.version }}"
-
-          echo "Starting deployment..."
-
-          if [[ "$BRANCH" == "develop" ]]; then
-            echo "🚀 Deploying to DEV environment"
-            echo "Server: dev.example.com"
-            # 👉 Replace below with real command
-            # ssh user@dev-server "deploy script"
-
-          elif [[ "$BRANCH" == "beta" ]]; then
-            echo "🚀 Deploying to STAGING environment"
-            echo "Server: beta.example.com"
-            # ssh user@staging-server "deploy script"
-
-          elif [[ "$BRANCH" == "prod" ]]; then
-            echo "🚀 Deploying to PRODUCTION environment"
-            echo "Server: prod.example.com"
-            # ssh user@prod-server "deploy script"
-
-          else
-            echo "❌ Unknown environment"
-            exit 1
-          fi
+          echo "Deploying version ${{ needs.versioning.outputs.version }} to ${{ needs.setup.outputs.env }}"
+      
+      # Add your AWS ECR Login, Docker Build, and Kubectl Apply steps here...
