@@ -25,7 +25,7 @@ pipeline {
                     withCredentials([string(credentialsId: 'nodejs', variable: 'dockerpwd')]) {
                     sh 'docker login -u rajeshmaddala -p ${dockerpwd}'
                     sh 'docker tag react rajeshmaddala/react'
-                    sh 'docker push rajeshmaddala/reacts'
+                    sh 'docker push rajeshmaddala/reactes'
 }
                 }
             }
