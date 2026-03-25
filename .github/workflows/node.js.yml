@@ -8,6 +8,16 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      release_type:
+        description: "Select release type (for manual runs)"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
   versioning:
@@ -21,25 +31,33 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 🔍 Detect change type from merge commit (PR title)
+      # ✅ Detect change type (FIXED LOGIC)
       - name: Detect change type
         id: type
         run: |
-          MESSAGE=$(git log -1 --pretty=%B)
-          echo "Merge message: $MESSAGE"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Manual run detected"
+            TYPE="${{ github.event.inputs.release_type }}"
+            echo "type=$TYPE" >> $GITHUB_OUTPUT
+            echo "deploy=true" >> $GITHUB_OUTPUT
 
-          if [[ $MESSAGE == *enhancement* ]]; then
-            echo "type=major" >> $GITHUB_OUTPUT
-            echo "deploy=false" >> $GITHUB_OUTPUT
-          elif [[ $MESSAGE == *feature* ]]; then
-            echo "type=minor" >> $GITHUB_OUTPUT
-            echo "deploy=true" >> $GITHUB_OUTPUT
-          elif [[ $MESSAGE == *bugfix* ]] || [[ $MESSAGE == *hotfix* ]]; then
-            echo "type=patch" >> $GITHUB_OUTPUT
-            echo "deploy=true" >> $GITHUB_OUTPUT
           else
-            echo "type=patch" >> $GITHUB_OUTPUT
-            echo "deploy=true" >> $GITHUB_OUTPUT
+            MESSAGE=$(git log -1 --pretty=%B)
+            echo "Merge message: $MESSAGE"
+
+            if [[ $MESSAGE == *enhancement* ]]; then
+              echo "type=major" >> $GITHUB_OUTPUT
+              echo "deploy=false" >> $GITHUB_OUTPUT
+            elif [[ $MESSAGE == *feature* ]]; then
+              echo "type=minor" >> $GITHUB_OUTPUT
+              echo "deploy=true" >> $GITHUB_OUTPUT
+            elif [[ $MESSAGE == *bugfix* ]] || [[ $MESSAGE == *hotfix* ]]; then
+              echo "type=patch" >> $GITHUB_OUTPUT
+              echo "deploy=true" >> $GITHUB_OUTPUT
+            else
+              echo "type=patch" >> $GITHUB_OUTPUT
+              echo "deploy=true" >> $GITHUB_OUTPUT
+            fi
           fi
 
       # 🏷️ Get latest tag
@@ -76,7 +94,7 @@ jobs:
           echo "New version: $NEW_VERSION"
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      # 🔥 Create Git Tag (only for auto OR manual)
+      # 🔥 Create Git Tag
       - name: Create Git Tag
         if: steps.type.outputs.deploy == 'true' || github.event_name == 'workflow_dispatch'
         run: |
@@ -95,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: versioning
 
-    # 🚫 Skip for major unless manual trigger
+    # 🚫 Skip enhancement(auto), ✅ allow manual
     if: needs.versioning.outputs.deploy == 'true' || github.event_name == 'workflow_dispatch'
 
     strategy:
