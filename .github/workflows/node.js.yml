@@ -1,6 +1,12 @@
 name: CI-CD (Versioning + ECR + EKS)
+
+
+
 permissions:
   contents: write
+
+
+
 on:
   push:
     branches:
