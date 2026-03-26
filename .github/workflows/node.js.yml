@@ -22,44 +22,53 @@ on:
           - major
 
 jobs:
-  # 🚦 GATEKEEPER: Decisions made here based on branch and commit message
+  # =========================
+  # 🚦 SETUP (Gatekeeper)
+  # =========================
   setup:
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
       env: ${{ steps.check.outputs.env }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - id: check
         run: |
           BRANCH="${{ github.ref_name }}"
+          MESSAGE=$(git log -1 --pretty=%B)
+
           echo "env=$BRANCH" >> $GITHUB_OUTPUT
-          
+
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "Manual run on $BRANCH: Proceeding."
+            echo "Manual run on $BRANCH → Allowed"
             echo "should_run=true" >> $GITHUB_OUTPUT
+
+          elif [[ "$BRANCH" == "prod" && "$MESSAGE" == *enhancement* ]]; then
+            echo "❌ Enhancement detected on prod → Blocking auto run"
+            echo "should_run=false" >> $GITHUB_OUTPUT
+
           else
-            MESSAGE=$(git log -1 --pretty=%B)
-            # 🚫 BLOCK automatic enhancements, ✅ ALLOW others
-            if [[ $MESSAGE == *enhancement* ]]; then
-              echo "Auto-push enhancement on $BRANCH: Skipping."
-              echo "should_run=false" >> $GITHUB_OUTPUT
-            else
-              echo "Auto-push valid on $BRANCH: Proceeding."
-              echo "should_run=true" >> $GITHUB_OUTPUT
-            fi
+            echo "✅ Allowed auto run"
+            echo "should_run=true" >> $GITHUB_OUTPUT
           fi
 
+  # =========================
+  # 🔢 VERSIONING
+  # =========================
   versioning:
     needs: setup
     if: needs.setup.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+
     outputs:
       version: ${{ steps.version.outputs.version }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -70,8 +79,10 @@ jobs:
             echo "type=${{ github.event.inputs.release_type }}" >> $GITHUB_OUTPUT
           else
             MESSAGE=$(git log -1 --pretty=%B)
-            if [[ $MESSAGE == *feature* ]]; then echo "type=minor" >> $GITHUB_OUTPUT
-            else echo "type=patch" >> $GITHUB_OUTPUT
+            if [[ $MESSAGE == *feature* ]]; then
+              echo "type=minor" >> $GITHUB_OUTPUT
+            else
+              echo "type=patch" >> $GITHUB_OUTPUT
             fi
           fi
 
@@ -80,34 +91,78 @@ jobs:
         run: |
           git fetch --tags --force
           TAG=$(git tag --sort=-v:refname | head -n 1)
-          if [ -z "$TAG" ]; then TAG="v1.0.0"; fi
-          
+
+          if [ -z "$TAG" ]; then
+            TAG="v1.0.0"
+          fi
+
           VERSION=${TAG#v}
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
           TYPE=${{ steps.type.outputs.type }}
 
-          if [[ "$TYPE" == "patch" ]]; then PATCH=$((PATCH+1))
-          elif [[ "$TYPE" == "minor" ]]; then MINOR=$((MINOR+1)); PATCH=0
-          elif [[ "$TYPE" == "major" ]]; then MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
+          if [[ "$TYPE" == "patch" ]]; then
+            PATCH=$((PATCH+1))
+          elif [[ "$TYPE" == "minor" ]]; then
+            MINOR=$((MINOR+1))
+            PATCH=0
+          elif [[ "$TYPE" == "major" ]]; then
+            MAJOR=$((MAJOR+1))
+            MINOR=0
+            PATCH=0
           fi
 
           NEW_TAG="v$MAJOR.$MINOR.$PATCH"
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
-          
+
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git tag -a $NEW_TAG -m "Release $NEW_TAG"
           git push origin $NEW_TAG
 
+  # =========================
+  # 🚀 BUILD & DEPLOY
+  # =========================
   build-and-deploy:
     needs: [setup, versioning]
     if: needs.setup.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    environment: 
-      name: ${{ needs.setup.outputs.env }} # 🔐 Use Environment protection (Approvals)
+
+    # 🔥 prod → production (for approvals)
+    environment:
+      name: ${{ needs.setup.outputs.env == 'prod' && 'production' || needs.setup.outputs.env }}
+
     steps:
       - name: Summary
         run: |
-          echo "Deploying version ${{ needs.versioning.outputs.version }} to ${{ needs.setup.outputs.env }}"
-      
-      # Add your AWS ECR Login, Docker Build, and Kubectl Apply steps here...
+          echo "🚀 Deploying version ${{ needs.versioning.outputs.version }}"
+          echo "🌍 Target environment: ${{ needs.setup.outputs.env }}"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # =========================
+      # 🐳 DOCKER BUILD
+      # =========================
+      - name: Build Docker Image
+        run: |
+          IMAGE_TAG=${{ needs.versioning.outputs.version }}
+          docker build -t my-app:$IMAGE_TAG .
+
+      # =========================
+      # 🔐 AWS LOGIN (PLACEHOLDER)
+      # =========================
+      - name: AWS Login
+        run: echo "Login to AWS ECR here"
+
+      # =========================
+      # 📦 PUSH TO ECR (PLACEHOLDER)
+      # =========================
+      - name: Push to ECR
+        run: echo "Push Docker image to ECR"
+
+      # =========================
+      # ☸️ DEPLOY TO EKS (PLACEHOLDER)
+      # =========================
+      - name: Deploy to EKS
+        run: |
+          echo "kubectl apply -f k8s/"
