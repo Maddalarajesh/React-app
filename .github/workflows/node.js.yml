@@ -23,14 +23,13 @@ on:
 
 jobs:
   # =========================
-  # 🚦 SETUP (Gatekeeper)
+  # 🔍 SETUP (Detect Change Type ONLY)
   # =========================
   setup:
     runs-on: ubuntu-latest
     outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-      env: ${{ steps.check.outputs.env }}
       change_type: ${{ steps.check.outputs.change_type }}
+      branch: ${{ steps.check.outputs.branch }}
 
     steps:
       - name: Checkout code
@@ -41,10 +40,10 @@ jobs:
           BRANCH="${{ github.ref_name }}"
           SOURCE_BRANCH="${{ github.head_ref || github.ref_name }}"
 
-          echo "env=$BRANCH" >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           echo "Source branch: $SOURCE_BRANCH"
 
-          # 🔍 Detect change type from branch name
+          # 🔍 Detect change type
           if [[ "$SOURCE_BRANCH" == *enhancement* ]]; then
             TYPE="major"
           elif [[ "$SOURCE_BRANCH" == *feature* ]]; then
@@ -57,21 +56,11 @@ jobs:
 
           echo "change_type=$TYPE" >> $GITHUB_OUTPUT
 
-          # 🚫 Block enhancement ONLY on prod (auto runs)
-          if [[ "${{ github.event_name }}" != "workflow_dispatch" && "$BRANCH" == "prod" && "$TYPE" == "major" ]]; then
-            echo "❌ Enhancement detected on prod → Blocking auto run"
-            echo "should_run=false" >> $GITHUB_OUTPUT
-          else
-            echo "✅ Allowed"
-            echo "should_run=true" >> $GITHUB_OUTPUT
-          fi
-
   # =========================
   # 🔢 VERSIONING
   # =========================
   versioning:
     needs: setup
-    if: needs.setup.outputs.should_run == 'true'
     runs-on: ubuntu-latest
 
     outputs:
@@ -102,23 +91,21 @@ jobs:
         run: |
           git fetch --tags --force
 
-          # 🏷️ Get latest tag (OLD VERSION)
           TAG=$(git tag --sort=-v:refname | head -n 1)
 
           if [ -z "$TAG" ]; then
             TAG="v1.0.0"
           fi
 
-          echo "📌 Previous Version: $TAG"
+          echo "Previous Version: $TAG"
 
           VERSION=${TAG#v}
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
 
           TYPE=${{ steps.type.outputs.type }}
 
-          echo "🔍 Change Type: $TYPE"
+          echo "Change Type: $TYPE"
 
-          # 🔢 Bump logic
           if [[ "$TYPE" == "patch" ]]; then
             PATCH=$((PATCH+1))
           elif [[ "$TYPE" == "minor" ]]; then
@@ -132,18 +119,16 @@ jobs:
 
           NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
-          echo "🚀 New Version: $NEW_TAG"
+          echo "New Version: $NEW_TAG"
 
-          # ✅ Set outputs
           echo "old_version=$TAG" >> $GITHUB_OUTPUT
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
-          # 🔥 Create tag safely
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
           if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-            echo "⚠️ Tag exists, skipping"
+            echo "Tag exists, skipping"
           else
             git tag -a $NEW_TAG -m "Release $NEW_TAG"
             git push origin $NEW_TAG
@@ -154,18 +139,14 @@ jobs:
   # =========================
   build-and-deploy:
     needs: [setup, versioning]
-    if: needs.setup.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-
-    environment:
-      name: ${{ needs.setup.outputs.env == 'prod' && 'production' || needs.setup.outputs.env }}
 
     steps:
       - name: Summary
         run: |
           echo "Previous Version: ${{ needs.versioning.outputs.old_version }}"
           echo "New Version: ${{ needs.versioning.outputs.version }}"
-          echo "Target environment: ${{ needs.setup.outputs.env }}"
+          echo "Branch: ${{ needs.setup.outputs.branch }}"
 
       - name: Checkout code
         uses: actions/checkout@v4
