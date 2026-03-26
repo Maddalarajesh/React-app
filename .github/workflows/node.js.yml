@@ -163,9 +163,9 @@ jobs:
     steps:
       - name: Summary
         run: |
-          echo "📌 Previous Version: ${{ needs.versioning.outputs.old_version }}"
-          echo "🚀 New Version: ${{ needs.versioning.outputs.version }}"
-          echo "🌍 Target environment: ${{ needs.setup.outputs.env }}"
+          echo "Previous Version: ${{ needs.versioning.outputs.old_version }}"
+          echo "New Version: ${{ needs.versioning.outputs.version }}"
+          echo "Target environment: ${{ needs.setup.outputs.env }}"
 
       - name: Checkout code
         uses: actions/checkout@v4
