@@ -1,222 +1,198 @@
 name: CI-CD (Versioning + ECR + EKS)
 
-
-
 permissions:
   contents: write
 
-
-
 on:
   push:
-    branches:
-      - develop
-      - beta
-      - prod
+    branches:
+      - develop
+      - beta
+      - prod
   workflow_dispatch:
-    inputs:
-      release_type:
-        description: "Select release type"
-        required: true
-        default: "patch"
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-
-
+    inputs:
+      release_type:
+        description: "Select release type"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
   # =========================
   # 🚦 SETUP (Gatekeeper)
   # =========================
   setup:
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-      env: ${{ steps.check.outputs.env }}
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      env: ${{ steps.check.outputs.env }}
+      change_type: ${{ steps.check.outputs.change_type }}
 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
+      - id: check
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          SOURCE_BRANCH="${{ github.head_ref || github.ref_name }}"
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+          echo "env=$BRANCH" >> $GITHUB_OUTPUT
+          echo "Source branch: $SOURCE_BRANCH"
 
+          # 🔍 Detect change type from branch name
+          if [[ "$SOURCE_BRANCH" == *enhancement* ]]; then
+            TYPE="major"
+          elif [[ "$SOURCE_BRANCH" == *feature* ]]; then
+            TYPE="minor"
+          elif [[ "$SOURCE_BRANCH" == *bugfix* ]] || [[ "$SOURCE_BRANCH" == *hotfix* ]]; then
+            TYPE="patch"
+          else
+            TYPE="patch"
+          fi
 
+          echo "change_type=$TYPE" >> $GITHUB_OUTPUT
 
-      - id: check
-        run: |
-          BRANCH="${{ github.ref_name }}"
-          MESSAGE=$(git log -1 --pretty=%B)
-
-
-
-          echo "env=$BRANCH" >> $GITHUB_OUTPUT
-
-
-
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "Manual run on $BRANCH → Allowed"
-            echo "should_run=true" >> $GITHUB_OUTPUT
-
-
-
-          elif [[ "$BRANCH" == "prod" && "$MESSAGE" == *enhancement* ]]; then
-            echo "❌ Enhancement detected on prod → Blocking auto run"
-            echo "should_run=false" >> $GITHUB_OUTPUT
-
-
-
-          else
-            echo "✅ Allowed auto run"
-            echo "should_run=true" >> $GITHUB_OUTPUT
-          fi
-
-
+          # 🚫 Block enhancement ONLY on prod (auto runs)
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" && "$BRANCH" == "prod" && "$TYPE" == "major" ]]; then
+            echo "❌ Enhancement detected on prod → Blocking auto run"
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Allowed"
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          fi
 
   # =========================
   # 🔢 VERSIONING
   # =========================
   versioning:
-    needs: setup
-    if: needs.setup.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
 
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      old_version: ${{ steps.version.outputs.old_version }}
 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    outputs:
-      version: ${{ steps.version.outputs.version }}
+      - name: Decide version type
+        id: type
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TYPE="${{ github.event.inputs.release_type }}"
+            echo "Manual type: $TYPE"
+          else
+            TYPE="${{ needs.setup.outputs.change_type }}"
+            echo "Auto detected type: $TYPE"
+          fi
 
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
 
+      - name: Calculate & Tag Version
+        id: version
+        run: |
+          git fetch --tags --force
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+          # 🏷️ Get latest tag (OLD VERSION)
+          TAG=$(git tag --sort=-v:refname | head -n 1)
 
+          if [ -z "$TAG" ]; then
+            TAG="v1.0.0"
+          fi
 
+          echo "📌 Previous Version: $TAG"
 
-      - name: Detect change type
-        id: type
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "type=${{ github.event.inputs.release_type }}" >> $GITHUB_OUTPUT
-          else
-            MESSAGE=$(git log -1 --pretty=%B)
-            if [[ $MESSAGE == *feature* ]]; then
-              echo "type=minor" >> $GITHUB_OUTPUT
-            else
-              echo "type=patch" >> $GITHUB_OUTPUT
-            fi
-          fi
+          VERSION=${TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
 
+          TYPE=${{ steps.type.outputs.type }}
 
+          echo "🔍 Change Type: $TYPE"
 
-      - name: Calculate & Tag Version
-        id: version
-        run: |
-          git fetch --tags --force
-          TAG=$(git tag --sort=-v:refname | head -n 1)
+          # 🔢 Bump logic
+          if [[ "$TYPE" == "patch" ]]; then
+            PATCH=$((PATCH+1))
+          elif [[ "$TYPE" == "minor" ]]; then
+            MINOR=$((MINOR+1))
+            PATCH=0
+          elif [[ "$TYPE" == "major" ]]; then
+            MAJOR=$((MAJOR+1))
+            MINOR=0
+            PATCH=0
+          fi
 
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
+          echo "🚀 New Version: $NEW_TAG"
 
-          if [ -z "$TAG" ]; then
-            TAG="v1.0.0"
-          fi
+          # ✅ Set outputs
+          echo "old_version=$TAG" >> $GITHUB_OUTPUT
+          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
+          # 🔥 Create tag safely
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
 
-
-          VERSION=${TAG#v}
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-          TYPE=${{ steps.type.outputs.type }}
-
-
-
-          if [[ "$TYPE" == "patch" ]]; then
-            PATCH=$((PATCH+1))
-          elif [[ "$TYPE" == "minor" ]]; then
-            MINOR=$((MINOR+1))
-            PATCH=0
-          elif [[ "$TYPE" == "major" ]]; then
-            MAJOR=$((MAJOR+1))
-            MINOR=0
-            PATCH=0
-          fi
-
-
-
-          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
-          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
-
-
-
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git tag -a $NEW_TAG -m "Release $NEW_TAG"
-          git push origin $NEW_TAG
-
-
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            echo "⚠️ Tag exists, skipping"
+          else
+            git tag -a $NEW_TAG -m "Release $NEW_TAG"
+            git push origin $NEW_TAG
+          fi
 
   # =========================
   # 🚀 BUILD & DEPLOY
   # =========================
   build-and-deploy:
-    needs: [setup, versioning]
-    if: needs.setup.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
+    needs: [setup, versioning]
+    if: needs.setup.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
 
+    environment:
+      name: ${{ needs.setup.outputs.env == 'prod' && 'production' || needs.setup.outputs.env }}
 
+    steps:
+      - name: Summary
+        run: |
+          echo "Previous Version: ${{ needs.versioning.outputs.old_version }}"
+          echo "New Version: ${{ needs.versioning.outputs.version }}"
+          echo "Target environment: ${{ needs.setup.outputs.env }}"
 
-    # 🔥 prod → production (for approvals)
-    environment:
-      name: ${{ needs.setup.outputs.env == 'prod' && 'production' || needs.setup.outputs.env }}
+      - name: Checkout code
+        uses: actions/checkout@v4
 
+      # =========================
+      # 🐳 DOCKER BUILD
+      # =========================
+      - name: Build Docker Image
+        run: |
+          IMAGE_TAG=${{ needs.versioning.outputs.version }}
+          docker build -t my-app:$IMAGE_TAG .
 
+      # =========================
+      # 🔐 AWS LOGIN (PLACEHOLDER)
+      # =========================
+      - name: AWS Login
+        run: echo "Login to AWS ECR here"
 
-    steps:
-      - name: Summary
-        run: |
-          echo "🚀 Deploying version ${{ needs.versioning.outputs.version }}"
-          echo "🌍 Target environment: ${{ needs.setup.outputs.env }}"
+      # =========================
+      # 📦 PUSH TO ECR (PLACEHOLDER)
+      # =========================
+      - name: Push to ECR
+        run: echo "Push Docker image to ECR"
 
-
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-
-
-      # =========================
-      # 🐳 DOCKER BUILD
-      # =========================
-      - name: Build Docker Image
-        run: |
-          IMAGE_TAG=${{ needs.versioning.outputs.version }}
-          docker build -t my-app:$IMAGE_TAG .
-
-
-
-      # =========================
-      # 🔐 AWS LOGIN (PLACEHOLDER)
-      # =========================
-      - name: AWS Login
-        run: echo "Login to AWS ECR here"
-
-
-
-      # =========================
-      # 📦 PUSH TO ECR (PLACEHOLDER)
-      # =========================
-      - name: Push to ECR
-        run: echo "Push Docker image to ECR"
-
-
-
-      # =========================
-      # ☸️ DEPLOY TO EKS (PLACEHOLDER)
-      # =========================
-      - name: Deploy to EKS
-        run: |
-          echo "kubectl apply -f k8s/"
+      # =========================
+      # ☸️ DEPLOY TO EKS (PLACEHOLDER)
+      # =========================
+      - name: Deploy to EKS
+        run: |
+          echo "kubectl apply -f k8s/"
