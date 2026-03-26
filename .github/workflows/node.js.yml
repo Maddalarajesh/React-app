@@ -42,10 +42,9 @@ jobs:
           SOURCE_BRANCH="${{ github.head_ref || github.ref_name }}"
 
           echo "env=$BRANCH" >> $GITHUB_OUTPUT
-
           echo "Source branch: $SOURCE_BRANCH"
 
-          # 🔍 Detect type from branch name
+          # 🔍 Detect change type from branch name
           if [[ "$SOURCE_BRANCH" == *enhancement* ]]; then
             TYPE="major"
           elif [[ "$SOURCE_BRANCH" == *feature* ]]; then
@@ -77,6 +76,7 @@ jobs:
 
     outputs:
       version: ${{ steps.version.outputs.version }}
+      old_version: ${{ steps.version.outputs.old_version }}
 
     steps:
       - name: Checkout code
@@ -101,16 +101,24 @@ jobs:
         id: version
         run: |
           git fetch --tags --force
+
+          # 🏷️ Get latest tag (OLD VERSION)
           TAG=$(git tag --sort=-v:refname | head -n 1)
 
           if [ -z "$TAG" ]; then
             TAG="v1.0.0"
           fi
 
+          echo "📌 Previous Version: $TAG"
+
           VERSION=${TAG#v}
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
           TYPE=${{ steps.type.outputs.type }}
 
+          echo "🔍 Change Type: $TYPE"
+
+          # 🔢 Bump logic
           if [[ "$TYPE" == "patch" ]]; then
             PATCH=$((PATCH+1))
           elif [[ "$TYPE" == "minor" ]]; then
@@ -123,13 +131,19 @@ jobs:
           fi
 
           NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+          echo "🚀 New Version: $NEW_TAG"
+
+          # ✅ Set outputs
+          echo "old_version=$TAG" >> $GITHUB_OUTPUT
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
+          # 🔥 Create tag safely
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
           if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-            echo "Tag exists, skipping"
+            echo "⚠️ Tag exists, skipping"
           else
             git tag -a $NEW_TAG -m "Release $NEW_TAG"
             git push origin $NEW_TAG
@@ -149,23 +163,36 @@ jobs:
     steps:
       - name: Summary
         run: |
-          echo "🚀 Deploying version ${{ needs.versioning.outputs.version }}"
+          echo "📌 Previous Version: ${{ needs.versioning.outputs.old_version }}"
+          echo "🚀 New Version: ${{ needs.versioning.outputs.version }}"
           echo "🌍 Target environment: ${{ needs.setup.outputs.env }}"
 
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # =========================
+      # 🐳 DOCKER BUILD
+      # =========================
       - name: Build Docker Image
         run: |
           IMAGE_TAG=${{ needs.versioning.outputs.version }}
           docker build -t my-app:$IMAGE_TAG .
 
+      # =========================
+      # 🔐 AWS LOGIN (PLACEHOLDER)
+      # =========================
       - name: AWS Login
         run: echo "Login to AWS ECR here"
 
+      # =========================
+      # 📦 PUSH TO ECR (PLACEHOLDER)
+      # =========================
       - name: Push to ECR
         run: echo "Push Docker image to ECR"
 
+      # =========================
+      # ☸️ DEPLOY TO EKS (PLACEHOLDER)
+      # =========================
       - name: Deploy to EKS
         run: |
           echo "kubectl apply -f k8s/"
