@@ -30,6 +30,7 @@ jobs:
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
       env: ${{ steps.check.outputs.env }}
+      change_type: ${{ steps.check.outputs.change_type }}
 
     steps:
       - name: Checkout code
@@ -38,20 +39,31 @@ jobs:
       - id: check
         run: |
           BRANCH="${{ github.ref_name }}"
-          MESSAGE=$(git log -1 --pretty=%B)
+          SOURCE_BRANCH="${{ github.head_ref || github.ref_name }}"
 
           echo "env=$BRANCH" >> $GITHUB_OUTPUT
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "Manual run on $BRANCH → Allowed"
-            echo "should_run=true" >> $GITHUB_OUTPUT
+          echo "Source branch: $SOURCE_BRANCH"
 
-          elif [[ "$BRANCH" == "prod" && "$MESSAGE" == *enhancement* ]]; then
+          # 🔍 Detect type from branch name
+          if [[ "$SOURCE_BRANCH" == *enhancement* ]]; then
+            TYPE="major"
+          elif [[ "$SOURCE_BRANCH" == *feature* ]]; then
+            TYPE="minor"
+          elif [[ "$SOURCE_BRANCH" == *bugfix* ]] || [[ "$SOURCE_BRANCH" == *hotfix* ]]; then
+            TYPE="patch"
+          else
+            TYPE="patch"
+          fi
+
+          echo "change_type=$TYPE" >> $GITHUB_OUTPUT
+
+          # 🚫 Block enhancement ONLY on prod (auto runs)
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" && "$BRANCH" == "prod" && "$TYPE" == "major" ]]; then
             echo "❌ Enhancement detected on prod → Blocking auto run"
             echo "should_run=false" >> $GITHUB_OUTPUT
-
           else
-            echo "✅ Allowed auto run"
+            echo "✅ Allowed"
             echo "should_run=true" >> $GITHUB_OUTPUT
           fi
 
@@ -72,19 +84,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect change type
+      - name: Decide version type
         id: type
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "type=${{ github.event.inputs.release_type }}" >> $GITHUB_OUTPUT
+            TYPE="${{ github.event.inputs.release_type }}"
+            echo "Manual type: $TYPE"
           else
-            MESSAGE=$(git log -1 --pretty=%B)
-            if [[ $MESSAGE == *feature* ]]; then
-              echo "type=minor" >> $GITHUB_OUTPUT
-            else
-              echo "type=patch" >> $GITHUB_OUTPUT
-            fi
+            TYPE="${{ needs.setup.outputs.change_type }}"
+            echo "Auto detected type: $TYPE"
           fi
+
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
 
       - name: Calculate & Tag Version
         id: version
@@ -116,8 +127,13 @@ jobs:
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git tag -a $NEW_TAG -m "Release $NEW_TAG"
-          git push origin $NEW_TAG
+
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag exists, skipping"
+          else
+            git tag -a $NEW_TAG -m "Release $NEW_TAG"
+            git push origin $NEW_TAG
+          fi
 
   # =========================
   # 🚀 BUILD & DEPLOY
@@ -127,7 +143,6 @@ jobs:
     if: needs.setup.outputs.should_run == 'true'
     runs-on: ubuntu-latest
 
-    # 🔥 prod → production (for approvals)
     environment:
       name: ${{ needs.setup.outputs.env == 'prod' && 'production' || needs.setup.outputs.env }}
 
@@ -140,29 +155,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # =========================
-      # 🐳 DOCKER BUILD
-      # =========================
       - name: Build Docker Image
         run: |
           IMAGE_TAG=${{ needs.versioning.outputs.version }}
           docker build -t my-app:$IMAGE_TAG .
 
-      # =========================
-      # 🔐 AWS LOGIN (PLACEHOLDER)
-      # =========================
       - name: AWS Login
         run: echo "Login to AWS ECR here"
 
-      # =========================
-      # 📦 PUSH TO ECR (PLACEHOLDER)
-      # =========================
       - name: Push to ECR
         run: echo "Push Docker image to ECR"
 
-      # =========================
-      # ☸️ DEPLOY TO EKS (PLACEHOLDER)
-      # =========================
       - name: Deploy to EKS
         run: |
           echo "kubectl apply -f k8s/"
