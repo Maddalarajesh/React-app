@@ -21,123 +21,44 @@ on:
 
 jobs:
   versioning:
+    # ... (Keep your existing versioning logic here) ...
     runs-on: ubuntu-latest
-
     outputs:
       deploy: ${{ steps.type.outputs.deploy }}
       version: ${{ steps.version.outputs.version }}
-
     steps:
+      # ... (Your existing steps) ...
       - name: Checkout code
         uses: actions/checkout@v4
-
-      # 🔍 Detect change type (auto OR manual)
-      - name: Detect change type
-        id: type
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TYPE="${{ github.event.inputs.release_type }}"
-            echo "Manual run with type: $TYPE"
-
-            echo "type=$TYPE" >> $GITHUB_OUTPUT
-            echo "deploy=true" >> $GITHUB_OUTPUT
-
-          else
-            MESSAGE=$(git log -1 --pretty=%B)
-            echo "Merge message: $MESSAGE"
-
-            if [[ $MESSAGE == *enhancement* ]]; then
-              echo "type=major" >> $GITHUB_OUTPUT
-              echo "deploy=false" >> $GITHUB_OUTPUT
-            elif [[ $MESSAGE == *feature* ]]; then
-              echo "type=minor" >> $GITHUB_OUTPUT
-              echo "deploy=true" >> $GITHUB_OUTPUT
-            elif [[ $MESSAGE == *bugfix* ]] || [[ $MESSAGE == *hotfix* ]]; then
-              echo "type=patch" >> $GITHUB_OUTPUT
-              echo "deploy=true" >> $GITHUB_OUTPUT
-            else
-              echo "type=patch" >> $GITHUB_OUTPUT
-              echo "deploy=true" >> $GITHUB_OUTPUT
-            fi
-          fi
-
-      # 🚫 Stop early for enhancement (auto only)
-      - name: Skip enhancement auto run
-        if: steps.type.outputs.deploy == 'false' && github.event_name != 'workflow_dispatch'
-        run: |
-          echo "Enhancement detected — skipping pipeline"
-          exit 0
-
-      # 🏷️ Get latest tag
-      - name: Get latest tag
-        id: get_tag
-        run: |
-          git fetch --tags
-          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      # 🔢 Bump version
-      - name: Bump version
-        id: version
-        run: |
-          TAG=${{ steps.get_tag.outputs.tag }}
-          VERSION=${TAG#v}
-
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-
-          TYPE=${{ steps.type.outputs.type }}
-
-          if [[ "$TYPE" == "patch" ]]; then
-            PATCH=$((PATCH+1))
-          elif [[ "$TYPE" == "minor" ]]; then
-            MINOR=$((MINOR+1))
-            PATCH=0
-          elif [[ "$TYPE" == "major" ]]; then
-            MAJOR=$((MAJOR+1))
-            MINOR=0
-            PATCH=0
-          fi
-
-          NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
-          echo "New version: $NEW_VERSION"
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-
-      # 🔥 Create Git Tag
-      - name: Create Git Tag
-        if: steps.type.outputs.deploy == 'true'
-        run: |
-          TAG=${{ steps.version.outputs.version }}
-
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag already exists, skipping"
-          else
-            git config user.name "github-actions"
-            git config user.email "actions@github.com"
-            git tag -a $TAG -m "Release $TAG"
-            git push origin $TAG
-          fi
+      # [Rest of your versioning steps...]
 
   build:
     runs-on: ubuntu-latest
     needs: versioning
-
-    # 🚫 Skip enhancement auto run, allow manual
     if: needs.versioning.outputs.deploy == 'true'
-
     strategy:
       matrix:
         node-version: [18.x, 20.x, 22.x]
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
-
       - run: npm ci
       - run: npm run build --if-present
       - run: npm test
+
+  # --- NEW DEPLOYMENT JOB WITH APPROVAL ---
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [versioning, build]
+    # This links the job to a GitHub Environment
+    environment: production 
+    steps:
+      - name: Deploying to Production
+        run: |
+          echo "Deploying version ${{ needs.versioning.outputs.version }} to Prod..."
+          # Add your actual deployment commands here (e.g., ssh, docker push, s3 sync)
