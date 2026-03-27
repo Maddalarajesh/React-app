@@ -18,7 +18,7 @@ steps:
 - script: |
     npm install --legacy-peer-deps
     npm run build
-  displayName: 'npm install'
+  displayName: 'npm instal'
   
 - task: PublishBuildArtifacts@1
   inputs:
