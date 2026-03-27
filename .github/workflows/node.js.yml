@@ -1,4 +1,4 @@
-name: CI-CD (Versioning + ECR + EKS)
+name: CI-CD (Versioning + DockerHub)
 
 permissions:
   contents: write
@@ -23,7 +23,7 @@ on:
 
 jobs:
   # =========================
-  # 🔍 SETUP (Detect Change Type ONLY)
+  # 🔍 SETUP
   # =========================
   setup:
     runs-on: ubuntu-latest
@@ -32,8 +32,7 @@ jobs:
       branch: ${{ steps.check.outputs.branch }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - id: check
         run: |
@@ -41,9 +40,7 @@ jobs:
           SOURCE_BRANCH="${{ github.head_ref || github.ref_name }}"
 
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-          echo "Source branch: $SOURCE_BRANCH"
 
-          # 🔍 Detect change type
           if [[ "$SOURCE_BRANCH" == *enhancement* ]]; then
             TYPE="major"
           elif [[ "$SOURCE_BRANCH" == *feature* ]]; then
@@ -68,43 +65,32 @@ jobs:
       old_version: ${{ steps.version.outputs.old_version }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Decide version type
-        id: type
+      - id: type
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             TYPE="${{ github.event.inputs.release_type }}"
-            echo "Manual type: $TYPE"
           else
             TYPE="${{ needs.setup.outputs.change_type }}"
-            echo "Auto detected type: $TYPE"
           fi
-
           echo "type=$TYPE" >> $GITHUB_OUTPUT
 
-      - name: Calculate & Tag Version
-        id: version
+      - id: version
         run: |
           git fetch --tags --force
 
           TAG=$(git tag --sort=-v:refname | head -n 1)
-
           if [ -z "$TAG" ]; then
             TAG="v1.0.0"
           fi
-
-          echo "Previous Version: $TAG"
 
           VERSION=${TAG#v}
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
 
           TYPE=${{ steps.type.outputs.type }}
-
-          echo "Change Type: $TYPE"
 
           if [[ "$TYPE" == "patch" ]]; then
             PATCH=$((PATCH+1))
@@ -119,23 +105,19 @@ jobs:
 
           NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
-          echo "New Version: $NEW_TAG"
-
           echo "old_version=$TAG" >> $GITHUB_OUTPUT
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-            echo "Tag exists, skipping"
-          else
+          if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
             git tag -a $NEW_TAG -m "Release $NEW_TAG"
             git push origin $NEW_TAG
           fi
 
   # =========================
-  # 🚀 BUILD & DEPLOY
+  # 🚀 BUILD & PUSH TO DOCKER HUB
   # =========================
   build-and-deploy:
     needs: [setup, versioning]
@@ -148,32 +130,29 @@ jobs:
           echo "New Version: ${{ needs.versioning.outputs.version }}"
           echo "Branch: ${{ needs.setup.outputs.branch }}"
 
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # =========================
-      # 🐳 DOCKER BUILD
-      # =========================
+      # 🔐 Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 🐳 Build Image
       - name: Build Docker Image
         run: |
-          IMAGE_TAG=${{ needs.versioning.outputs.version }}
-          docker build -t my-app:$IMAGE_TAG .
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
+          TAG=${{ needs.versioning.outputs.version }}
 
-      # =========================
-      # 🔐 AWS LOGIN (PLACEHOLDER)
-      # =========================
-      - name: AWS Login
-        run: echo "Login to AWS ECR here"
+          docker build -t $IMAGE:$TAG .
+          docker tag $IMAGE:$TAG $IMAGE:latest
 
-      # =========================
-      # 📦 PUSH TO ECR (PLACEHOLDER)
-      # =========================
-      - name: Push to ECR
-        run: echo "Push Docker image to ECR"
-
-      # =========================
-      # ☸️ DEPLOY TO EKS (PLACEHOLDER)
-      # =========================
-      - name: Deploy to EKS
+      # 📦 Push Image
+      - name: Push Docker Image
         run: |
-          echo "kubectl apply -f k8s/"
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
+          TAG=${{ needs.versioning.outputs.version }}
+
+          docker push $IMAGE:$TAG
+          docker push $IMAGE:latest
