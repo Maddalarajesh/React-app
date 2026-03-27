@@ -1,7 +1,7 @@
 #Choose a base image
 FROM node
 
-# Set the working dir when our container executes
+# Set the working dir when our container execution
 WORKDIR /usr/src/app
 
 # Copy the full of our applications bundles
