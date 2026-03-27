@@ -1,4 +1,4 @@
-name: CI-CD (Versioning + DockerHub)
+name: 🚀 CI-CD (Versioning + DockerHub)
 
 permissions:
   contents: write
@@ -28,30 +28,35 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
-      change_type: ${{ steps.check.outputs.change_type }}
-      branch: ${{ steps.check.outputs.branch }}
+      change_type: ${{ steps.detect.outputs.change_type }}
+      branch: ${{ steps.detect.outputs.branch }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - id: check
+      - id: detect
         run: |
           BRANCH="${{ github.ref_name }}"
-          SOURCE_BRANCH="${{ github.head_ref || github.ref_name }}"
+          COMMIT_MSG=$(git log -1 --pretty=%B)
 
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
 
-          if [[ "$SOURCE_BRANCH" == *enhancement* ]]; then
+          echo "🔍 Commit message:"
+          echo "$COMMIT_MSG"
+
+          # Detect branch type from commit message
+          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
             TYPE="major"
-          elif [[ "$SOURCE_BRANCH" == *feature* ]]; then
+          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
             TYPE="minor"
-          elif [[ "$SOURCE_BRANCH" == *bugfix* ]] || [[ "$SOURCE_BRANCH" == *hotfix* ]]; then
+          elif [[ "$COMMIT_MSG" == *"bugfix/"* ]] || [[ "$COMMIT_MSG" == *"hotfix/"* ]]; then
             TYPE="patch"
           else
             TYPE="patch"
           fi
 
           echo "change_type=$TYPE" >> $GITHUB_OUTPUT
+          echo "✅ Detected change type: $TYPE"
 
   # =========================
   # 🔢 VERSIONING
@@ -61,8 +66,8 @@ jobs:
     runs-on: ubuntu-latest
 
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      old_version: ${{ steps.version.outputs.old_version }}
+      version: ${{ steps.calc.outputs.version }}
+      old_version: ${{ steps.calc.outputs.old_version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -73,24 +78,30 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             TYPE="${{ github.event.inputs.release_type }}"
+            echo "🔧 Manual override: $TYPE"
           else
             TYPE="${{ needs.setup.outputs.change_type }}"
           fi
+
           echo "type=$TYPE" >> $GITHUB_OUTPUT
 
-      - id: version
+      - id: calc
         run: |
           git fetch --tags --force
 
-          TAG=$(git tag --sort=-v:refname | head -n 1)
-          if [ -z "$TAG" ]; then
-            TAG="v1.0.0"
+          LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
+
+          if [ -z "$LAST_TAG" ]; then
+            LAST_TAG="v1.0.0"
           fi
 
-          VERSION=${TAG#v}
+          VERSION=${LAST_TAG#v}
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
 
           TYPE=${{ steps.type.outputs.type }}
+
+          echo "📌 Previous Version: $LAST_TAG"
+          echo "📌 Change Type: $TYPE"
 
           if [[ "$TYPE" == "patch" ]]; then
             PATCH=$((PATCH+1))
@@ -105,7 +116,7 @@ jobs:
 
           NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
-          echo "old_version=$TAG" >> $GITHUB_OUTPUT
+          echo "old_version=$LAST_TAG" >> $GITHUB_OUTPUT
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
           git config user.name "github-actions"
@@ -124,22 +135,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Summary
+      - name: 📊 Summary
         run: |
+          echo "=================================="
+          echo "🚀 Deployment Summary"
+          echo "Branch: ${{ needs.setup.outputs.branch }}"
           echo "Previous Version: ${{ needs.versioning.outputs.old_version }}"
           echo "New Version: ${{ needs.versioning.outputs.version }}"
-          echo "Branch: ${{ needs.setup.outputs.branch }}"
+          echo "=================================="
 
       - uses: actions/checkout@v4
 
-      # 🔐 Login to Docker Hub
+      # 🔐 Login
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # 🐳 Build Image
+      # 🐳 Build
       - name: Build Docker Image
         run: |
           IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
@@ -148,7 +162,7 @@ jobs:
           docker build -t $IMAGE:$TAG .
           docker tag $IMAGE:$TAG $IMAGE:latest
 
-      # 📦 Push Image
+      # 📦 Push
       - name: Push Docker Image
         run: |
           IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
