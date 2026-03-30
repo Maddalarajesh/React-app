@@ -4,7 +4,7 @@ FROM node
 # Set the working dir when our container execution
 WORKDIR /usr/src/app
 
-# Copy the full of our web applications bundles
+# Copy the full of our web applications bundles to a folder
 COPY . /usr/src/app
 
 # Install our packages
