@@ -1,4 +1,4 @@
-name: React Unit Tests
+name: React Unit Tests with Allure
 
 on:
   pull_request:
@@ -35,14 +35,15 @@ jobs:
       - name: Generate Allure Report
         run: allure generate allure-results --clean -o allure-report
 
-      # Upload Allure report as artifact (v4)
-      - name: Upload Allure Report
-        uses: actions/upload-artifact@v4
+      # Publish Allure report directly in PR checks summary
+      - name: Publish Allure Report
+        uses: simple-elf/allure-report-action@v1.6
         with:
-          name: allure-report
-          path: allure-report
+          allure_results: allure-results
+          allure_report: allure-report
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Upload coverage report as artifact (v4)
+      # Upload coverage report as artifact (optional)
       - name: Upload Coverage Report
         uses: actions/upload-artifact@v4
         with:
