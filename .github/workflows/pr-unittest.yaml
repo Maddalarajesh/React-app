@@ -35,17 +35,16 @@ jobs:
       - name: Generate Allure Report
         run: allure generate allure-results --clean -o allure-report
 
-      # Publish Allure report directly in PR checks summary
-      - name: Publish Allure Report
-        uses: simple-elf/allure-report-action@v1.6
-        with:
-          allure_results: allure-results
-          allure_report: allure-report
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
       # Upload coverage report as artifact (optional)
       - name: Upload Coverage Report
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage
+
+      # Deploy Allure Report to GitHub Pages
+      - name: Deploy Allure Report to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./allure-report
