@@ -1,4 +1,4 @@
-name: React Unit Tests with Coverage
+name: React Coverage Quality Gate
 
 on:
   pull_request:
@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Setup Node
+      # Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -23,18 +23,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Run tests with coverage + JSON summary (IMPORTANT FIX)
+      # Run tests with coverage (JSON included via package.json)
       - name: Run unit tests
-        run: npm test -- --coverage --coverageReporters=json-summary
+        run: npm test -- --coverage
 
-      # Show coverage % in GitHub summary
-      - name: Extract Coverage %
+      # Extract and display coverage %
+      - name: Show Coverage %
         run: |
           if [ -f coverage/coverage-summary.json ]; then
             COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
+            echo "Coverage: $COVERAGE%"
             echo "### ✅ Test Coverage: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
           else
-            echo "Coverage summary not found" >> $GITHUB_STEP_SUMMARY
+            echo "❌ coverage-summary.json not found"
+            exit 1
           fi
 
       # Upload HTML coverage report
