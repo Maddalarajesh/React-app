@@ -1,4 +1,4 @@
-name: React Unit Tests with Allure
+name: React Unit Tests with Coverage
 
 on:
   pull_request:
@@ -9,11 +9,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout the code
+      # Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Setup Node.js
+      # Setup Node
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -21,30 +21,29 @@ jobs:
 
       # Install dependencies
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      # Run Jest unit tests with coverage + Allure results
+      # Run tests with coverage
       - name: Run unit tests
-        run: npm test -- --coverage --alluredir=allure-results
+        run: npm test -- --coverage
 
-      # Install Allure commandline
-      - name: Install Allure CLI
-        run: npm install -g allure-commandline
+      # Extract coverage % and show in summary
+      - name: Extract Coverage %
+        run: |
+          COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
+          echo "### ✅ Test Coverage: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
 
-      # Generate Allure HTML report
-      - name: Generate Allure Report
-        run: allure generate allure-results --clean -o allure-report
-
-      # Upload coverage report as artifact (optional)
+      # Upload HTML coverage report
       - name: Upload Coverage Report
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: coverage
+          path: coverage/lcov-report
 
-      # Deploy Allure Report to GitHub Pages
-      - name: Deploy Allure Report to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
+      # Optional: Comment coverage on PR
+      - name: Comment Coverage on PR
+        uses: marocchino/sticky-pull-request-comment@v2
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./allure-report
+          message: |
+            📊 Test Coverage:
+            $(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct + '%')")
