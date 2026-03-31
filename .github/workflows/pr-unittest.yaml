@@ -23,15 +23,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Run tests with coverage
+      # Run tests with coverage + JSON summary (IMPORTANT FIX)
       - name: Run unit tests
-        run: npm test -- --coverage
+        run: npm test -- --coverage --coverageReporters=json-summary
 
-      # Extract coverage % and show in summary
+      # Show coverage % in GitHub summary
       - name: Extract Coverage %
         run: |
-          COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
-          echo "### ✅ Test Coverage: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
+          if [ -f coverage/coverage-summary.json ]; then
+            COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
+            echo "### ✅ Test Coverage: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Coverage summary not found" >> $GITHUB_STEP_SUMMARY
+          fi
 
       # Upload HTML coverage report
       - name: Upload Coverage Report
@@ -39,11 +43,3 @@ jobs:
         with:
           name: coverage-report
           path: coverage/lcov-report
-
-      # Optional: Comment coverage on PR
-      - name: Comment Coverage on PR
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          message: |
-            📊 Test Coverage:
-            $(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct + '%')")
