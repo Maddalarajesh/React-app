@@ -3,7 +3,7 @@ pipeline {
         stages{
             stage('Git checkout') {
                 steps {
-                    git branch: 'test', url: 'https://github.com/Maddalarajesh/React-app.git'
+                    git branch: 'production', url: 'https://github.com/Maddalarajesh/React-app.git'
                 }
             }
             stage('change diretory') {
