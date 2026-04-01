@@ -25,18 +25,3 @@ jobs:
 
       - name: Install Allure CLI
         run: npm install -g allure-commandline
-
-      - name: Generate Allure Report
-        run: allure generate allure-results --clean -o allure-report
-
-      - name: Upload Allure Report
-        uses: actions/upload-artifact@v3
-        with:
-          name: allure-report
-          path: allure-report
-
-      - name: Upload Coverage Report
-        uses: actions/upload-artifact@v3
-        with:
-          name: coverage-report
-          path: coverage
