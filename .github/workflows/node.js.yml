@@ -44,7 +44,6 @@ jobs:
           echo "🔍 Commit message:"
           echo "$COMMIT_MSG"
 
-          # Detect branch type from commit message
           if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
             TYPE="major"
           elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
@@ -89,14 +88,16 @@ jobs:
         run: |
           git fetch --tags --force
 
-          LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
+          LAST_TAG=$(git tag --sort=-creatordate | head -n 1)
 
           if [ -z "$LAST_TAG" ]; then
             LAST_TAG="v1.0.0"
           fi
 
           VERSION=${LAST_TAG#v}
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
           TYPE=${{ steps.type.outputs.type }}
 
@@ -105,16 +106,20 @@ jobs:
 
           if [[ "$TYPE" == "patch" ]]; then
             PATCH=$((PATCH+1))
+            DATE=$(date +%Y-%m-%d)
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
+
           elif [[ "$TYPE" == "minor" ]]; then
             MINOR=$((MINOR+1))
             PATCH=0
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
           elif [[ "$TYPE" == "major" ]]; then
             MAJOR=$((MAJOR+1))
             MINOR=0
             PATCH=0
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
           fi
-
-          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
           echo "old_version=$LAST_TAG" >> $GITHUB_OUTPUT
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
@@ -160,7 +165,6 @@ jobs:
           TAG=${{ needs.versioning.outputs.version }}
 
           docker build -t $IMAGE:$TAG .
-          docker tag $IMAGE:$TAG $IMAGE:latest
 
       # 📦 Push
       - name: Push Docker Image
@@ -169,4 +173,3 @@ jobs:
           TAG=${{ needs.versioning.outputs.version }}
 
           docker push $IMAGE:$TAG
-          docker push $IMAGE:latest
