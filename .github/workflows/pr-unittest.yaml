@@ -22,14 +22,16 @@ jobs:
       # Install dependencies
       - name: Install dependencies
         run: npm ci
+      - name: Install LiveReview
+        run: npm install -g github:hexmos/livereview  
 
       # ✅ Install LiveReview
-      - name: Install LiveReview
-        run: |
-          git clone https://github.com/hexmos/livereview.git
-          cd livereview
-          npm install
-          npm link
+      # - name: Install LiveReview
+      #   run: |
+      #     git clone https://github.com/hexmos/livereview.git
+      #     cd livereview
+      #     npm install
+      #     npm link
 
       # ✅ Run LiveReview on PR diff
       - name: Run LiveReview (AI Code Review)
