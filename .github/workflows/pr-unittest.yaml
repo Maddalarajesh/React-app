@@ -24,10 +24,10 @@ jobs:
         run: npm ci
 
       # 4️⃣ Quick demo setup for LiveReview CLI
-      - name: Install LiveReview Demo CLI
-        run: curl -fsSL https://raw.githubusercontent.com/HexmosTech/LiveReview/main/lrops.sh | sudo bash -s -- setup-demo
-
-      # 5️⃣ Run LiveReview on PR diff
+      - name: Install LiveReview Demo
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/HexmosTech/LiveReview/main/lrops.sh | \
+          sudo bash -s -- setup-demo --force
       - name: Run LiveReview AI review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
