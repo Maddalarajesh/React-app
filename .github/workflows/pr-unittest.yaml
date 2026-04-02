@@ -7,9 +7,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Added explicit permissions for the default GITHUB_TOKEN
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
 
     steps:
@@ -17,53 +16,50 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Use the built-in token instead of a manual PAT to avoid 'repo not exists'
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
-      # 1️⃣ INSTALL WITHOUT SUDO: Install the CLI locally to the runner
+      # 1️⃣ Direct Binary Download (Avoids 403 and interactive prompts)
       - name: Install LiveReview CLI
         run: |
-          mkdir -p bin
-          curl -fsSL https://hexmos.com/lrc-install.sh | bash -s -- --install-dir ./bin
+          mkdir -p $GITHUB_WORKSPACE/bin
+          # Downloading the specific linux-amd64 binary directly
+          wget -O $GITHUB_WORKSPACE/bin/lrc https://github.com/HexmosTech/Installerpedia/releases/latest/download/lrc-linux-amd64
+          chmod +x $GITHUB_WORKSPACE/bin/lrc
           echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
-          # Force execute permissions just in case
-          chmod +x ./bin/lrc || true
 
-      # 2️⃣ RUN REVIEW: Use the local binary
+      # 2️⃣ Run Review using the Binary
       - name: Run LiveReview AI Review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          # Ensure we are comparing against the target branch
+          git fetch origin prod
           git diff origin/prod > diff.txt
           
-          # Check if the binary exists and run it
-          if [ -f "./bin/lrc" ]; then
-            ./bin/lrc review --diff diff.txt --api-key $GEMINI_API_KEY > review_result.txt
-          else
-            # Fallback to npx if binary install failed
-            npx @hexmos/ipm i livereview
-            npx lrc review --diff diff.txt --api-key $GEMINI_API_KEY > review_result.txt
-          fi
+          echo "================ AI REVIEW START ================"
+          # Run the review. Note: Ensure the CLI flags match your version
+          lrc review --diff diff.txt --api-key $GEMINI_API_KEY > review_result.txt
           
           cat review_result.txt
+          
           if grep -iqE "error|critical" review_result.txt; then
             echo "❌ AI Review found critical issues."
             exit 1
           fi
 
-      # 3️⃣ TESTS & COVERAGE
+      # 3️⃣ Unit Tests & Coverage
       - name: Run unit tests
+        # Added --json-summary reporter explicitly to ensure the file is created
         run: npm test -- --coverage --watchAll=false --coverageReporters="json-summary"
 
+      # 4️⃣ Enforce 80% Coverage Gate
       - name: Enforce Coverage Gate (80%)
         run: |
           SUMMARY="./coverage/coverage-summary.json"
@@ -71,10 +67,13 @@ jobs:
             node -e "
               const summary = require('$SUMMARY');
               const pct = summary.total.lines.pct;
-              console.log('📊 Coverage: ' + pct + '%');
-              if (pct < 80) process.exit(1);
+              console.log('📊 Current Coverage: ' + pct + '%');
+              if (pct < 80) {
+                console.error('❌ Coverage is below 80%!');
+                process.exit(1);
+              }
             "
           else
-            echo "❌ No coverage summary found."
+            echo "❌ coverage-summary.json not found! Check your Jest config."
             exit 1
           fi
