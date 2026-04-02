@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 1️⃣ Generate the diff and run AI Review via a simple Node script
+      # 1️⃣ AI Review with Error Handling
       - name: AI Code Review (Direct via Gemini)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -30,7 +30,6 @@ jobs:
           git fetch origin prod
           git diff origin/prod > diff.txt
           
-          # We'll use a small Node script to send this to Gemini
           node -e "
           const https = require('https');
           const fs = require('fs');
@@ -41,9 +40,9 @@ jobs:
             process.exit(0);
           }
 
-          const data = JSON.stringify({
+          const postData = JSON.stringify({
             contents: [{
-              parts: [{ text: 'Review this git diff for bugs or security issues. If it looks good, say OK. If there are issues, start your response with ERROR: \n\n' + diff }]
+              parts: [{ text: 'Act as a senior developer. Review this git diff for critical bugs or security issues. If it looks good, say OK. If there are issues, start your response with the word ERROR and explain why: \n\n' + diff }]
             }]
           });
 
@@ -51,30 +50,51 @@ jobs:
             hostname: 'generativelanguage.googleapis.com',
             path: '/v1beta/models/gemini-1.5-flash:generateContent?key=' + process.env.GEMINI_API_KEY,
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
+            headers: { 
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(postData)
+            }
           };
 
           const req = https.request(options, (res) => {
             let body = '';
             res.on('data', (d) => body += d);
             res.on('end', () => {
-              const response = JSON.parse(body);
-              const text = response.candidates[0].content.parts[0].text;
-              console.log('--- AI REVIEW RESULT ---');
-              console.log(text);
-              if (text.includes('ERROR')) {
-                console.error('❌ AI detected issues!');
+              try {
+                const response = JSON.parse(body);
+                
+                // CHECK FOR API ERRORS
+                if (response.error) {
+                  console.error('❌ Gemini API Error:', response.error.message);
+                  process.exit(1);
+                }
+
+                if (!response.candidates || response.candidates.length === 0) {
+                   console.error('❌ No AI response generated. Full Body:', body);
+                   process.exit(1);
+                }
+
+                const text = response.candidates[0].content.parts[0].text;
+                console.log('--- AI REVIEW RESULT ---');
+                console.log(text);
+
+                if (text.toUpperCase().includes('ERROR')) {
+                  console.error('❌ AI detected issues in your code!');
+                  process.exit(1);
+                }
+              } catch (e) {
+                console.error('❌ Failed to parse response:', body);
                 process.exit(1);
               }
             });
           });
 
-          req.on('error', (e) => { console.error(e); process.exit(1); });
-          req.write(data);
+          req.on('error', (e) => { console.error('❌ Connection Error:', e); process.exit(1); });
+          req.write(postData);
           req.end();
           "
 
-      # 2️⃣ Run unit tests
+      # 2️⃣ Unit Tests & Coverage
       - name: Run unit tests
         run: npm test -- --coverage --watchAll=false --coverageReporters="json-summary"
 
