@@ -7,9 +7,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
+    
+    # We run LiveReview as a 'service' container so it's ready when the job starts
+    services:
+      livereview:
+        image: hexmostech/livereview:latest
+        ports:
+          - 8888:8888
 
     steps:
       - name: Checkout repository
@@ -25,38 +29,44 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 1️⃣ Direct Binary Download (Avoids 403 and interactive prompts)
-      - name: Install LiveReview CLI
+      # 1️⃣ Wait for the Docker service to be healthy
+      - name: Wait for LiveReview Service
         run: |
-          mkdir -p $GITHUB_WORKSPACE/bin
-          # Downloading the specific linux-amd64 binary directly
-          wget -O $GITHUB_WORKSPACE/bin/lrc https://github.com/HexmosTech/Installerpedia/releases/latest/download/lrc-linux-amd64
-          chmod +x $GITHUB_WORKSPACE/bin/lrc
-          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+          echo "⏳ Waiting for LiveReview container..."
+          timeout 60s bash -c 'until curl -s http://localhost:8888/health; do sleep 5; done'
+          echo "✅ LiveReview is online"
 
-      # 2️⃣ Run Review using the Binary
+      # 2️⃣ Run Review via API
       - name: Run LiveReview AI Review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # Ensure we are comparing against the target branch
           git fetch origin prod
           git diff origin/prod > diff.txt
           
+          # Use Node to package the diff safely into JSON
+          node -e "
+            const fs = require('fs');
+            const diff = fs.readFileSync('diff.txt', 'utf8');
+            fs.writeFileSync('payload.json', JSON.stringify({ diff }));
+          "
+
           echo "================ AI REVIEW START ================"
-          # Run the review. Note: Ensure the CLI flags match your version
-          lrc review --diff diff.txt --api-key $GEMINI_API_KEY > review_result.txt
+          RESPONSE=$(curl -s -X POST http://localhost:8888/api/review \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $GEMINI_API_KEY" \
+            -d @payload.json)
+
+          echo "🔍 Result: $RESPONSE"
           
-          cat review_result.txt
-          
-          if grep -iqE "error|critical" review_result.txt; then
+          if echo "$RESPONSE" | grep -iqE "error|critical"; then
             echo "❌ AI Review found critical issues."
             exit 1
           fi
 
       # 3️⃣ Unit Tests & Coverage
       - name: Run unit tests
-        # Added --json-summary reporter explicitly to ensure the file is created
+        # This ensures we get the specific file needed for the next step
         run: npm test -- --coverage --watchAll=false --coverageReporters="json-summary"
 
       # 4️⃣ Enforce 80% Coverage Gate
@@ -69,11 +79,11 @@ jobs:
               const pct = summary.total.lines.pct;
               console.log('📊 Current Coverage: ' + pct + '%');
               if (pct < 80) {
-                console.error('❌ Coverage is below 80%!');
+                console.error('❌ Coverage below 80% threshold!');
                 process.exit(1);
               }
             "
           else
-            echo "❌ coverage-summary.json not found! Check your Jest config."
+            echo "❌ coverage-summary.json not found! Ensure your test command uses --coverageReporters='json-summary'"
             exit 1
           fi
