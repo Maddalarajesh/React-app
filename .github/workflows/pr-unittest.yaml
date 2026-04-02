@@ -23,9 +23,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 4️⃣ Install LiveReview CLI
-      - name: Install LiveReview CLI
-        run: curl -fsSL https://hexmos.com/lrc-install.sh | bash
+      # 4️⃣ Quick demo setup for LiveReview CLI
+      - name: Install LiveReview Demo CLI
+        run: curl -fsSL https://raw.githubusercontent.com/HexmosTech/LiveReview/main/lrops.sh | sudo bash -s -- setup-demo
 
       # 5️⃣ Run LiveReview on PR diff
       - name: Run LiveReview AI review
