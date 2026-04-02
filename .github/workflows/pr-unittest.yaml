@@ -23,7 +23,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Install LiveReview
-        run: npm install -g https://github.com/hexmos/livereview  
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: npm install -g https://$GH_TOKEN@github.com/hexmos/livereview
 
       # ✅ Install LiveReview
       # - name: Install LiveReview
