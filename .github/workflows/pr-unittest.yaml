@@ -7,13 +7,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
-    # We run LiveReview as a 'service' container so it's ready when the job starts
-    services:
-      livereview:
-        image: hexmostech/livereview:latest
-        ports:
-          - 8888:8888
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Checkout repository
@@ -29,47 +25,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 1️⃣ Wait for the Docker service to be healthy
-      - name: Wait for LiveReview Service
-        run: |
-          echo "⏳ Waiting for LiveReview container..."
-          timeout 60s bash -c 'until curl -s http://localhost:8888/health; do sleep 5; done'
-          echo "✅ LiveReview is online"
+      # 1️⃣ THE OFFICIAL LIVEREVIEW ACTION
+      # This replaces all the 'curl', 'wget', and 'docker' steps.
+      - name: LiveReview AI Code Review
+        uses: HexmosTech/LiveReview@main
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          # This automatically compares the PR branch to the base branch (prod)
+          base_branch: 'prod'
 
-      # 2️⃣ Run Review via API
-      - name: Run LiveReview AI Review
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          git fetch origin prod
-          git diff origin/prod > diff.txt
-          
-          # Use Node to package the diff safely into JSON
-          node -e "
-            const fs = require('fs');
-            const diff = fs.readFileSync('diff.txt', 'utf8');
-            fs.writeFileSync('payload.json', JSON.stringify({ diff }));
-          "
-
-          echo "================ AI REVIEW START ================"
-          RESPONSE=$(curl -s -X POST http://localhost:8888/api/review \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $GEMINI_API_KEY" \
-            -d @payload.json)
-
-          echo "🔍 Result: $RESPONSE"
-          
-          if echo "$RESPONSE" | grep -iqE "error|critical"; then
-            echo "❌ AI Review found critical issues."
-            exit 1
-          fi
-
-      # 3️⃣ Unit Tests & Coverage
+      # 2️⃣ Run unit tests
+      # We ensure 'json-summary' is generated for the next step.
       - name: Run unit tests
-        # This ensures we get the specific file needed for the next step
         run: npm test -- --coverage --watchAll=false --coverageReporters="json-summary"
 
-      # 4️⃣ Enforce 80% Coverage Gate
+      # 3️⃣ Enforce 80% Coverage Gate
       - name: Enforce Coverage Gate (80%)
         run: |
           SUMMARY="./coverage/coverage-summary.json"
@@ -79,11 +49,11 @@ jobs:
               const pct = summary.total.lines.pct;
               console.log('📊 Current Coverage: ' + pct + '%');
               if (pct < 80) {
-                console.error('❌ Coverage below 80% threshold!');
+                console.error('❌ Coverage is below the 80% threshold!');
                 process.exit(1);
               }
             "
           else
-            echo "❌ coverage-summary.json not found! Ensure your test command uses --coverageReporters='json-summary'"
+            echo "❌ coverage-summary.json not found! Check your Jest config."
             exit 1
           fi
