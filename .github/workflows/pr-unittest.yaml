@@ -25,7 +25,11 @@ jobs:
 
       # ✅ Install LiveReview
       - name: Install LiveReview
-        run: npm install -g livereview
+        run: |
+          git clone https://github.com/hexmos/livereview.git
+          cd livereview
+          npm install
+          npm link
 
       # ✅ Run LiveReview on PR diff
       - name: Run LiveReview (AI Code Review)
