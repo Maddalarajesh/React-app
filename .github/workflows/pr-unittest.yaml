@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 1️⃣ AI Review with Error Handling
+      # 1️⃣ AI Review with Fixed API Pathing
       - name: AI Code Review (Direct via Gemini)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -48,11 +48,11 @@ jobs:
 
           const options = {
             hostname: 'generativelanguage.googleapis.com',
-            path: '/v1beta/models/gemini-1.5-flash:generateContent?key=' + process.env.GEMINI_API_KEY,
+            // Updated to v1 and fixed the model pathing
+            path: '/v1/models/gemini-1.5-flash:generateContent?key=' + process.env.GEMINI_API_KEY,
             method: 'POST',
             headers: { 
-              'Content-Type': 'application/json',
-              'Content-Length': Buffer.byteLength(postData)
+              'Content-Type': 'application/json'
             }
           };
 
@@ -63,14 +63,13 @@ jobs:
               try {
                 const response = JSON.parse(body);
                 
-                // CHECK FOR API ERRORS
                 if (response.error) {
-                  console.error('❌ Gemini API Error:', response.error.message);
+                  console.error('❌ API Error:', response.error.message);
                   process.exit(1);
                 }
 
                 if (!response.candidates || response.candidates.length === 0) {
-                   console.error('❌ No AI response generated. Full Body:', body);
+                   console.error('❌ No candidates returned. Check safety settings or diff size.');
                    process.exit(1);
                 }
 
@@ -79,11 +78,12 @@ jobs:
                 console.log(text);
 
                 if (text.toUpperCase().includes('ERROR')) {
-                  console.error('❌ AI detected issues in your code!');
+                  console.error('❌ AI detected issues!');
                   process.exit(1);
                 }
               } catch (e) {
-                console.error('❌ Failed to parse response:', body);
+                console.error('❌ Parse Error. Status:', res.statusCode);
+                console.error('Body:', body);
                 process.exit(1);
               }
             });
@@ -102,7 +102,7 @@ jobs:
       - name: Enforce Coverage Gate (80%)
         run: |
           SUMMARY="./coverage/coverage-summary.json"
-          if [ -f "$SUMMARY" ]; then
+          if [ -f \"$SUMMARY\" ]; then
             node -e "
               const summary = require('$SUMMARY');
               const pct = summary.total.lines.pct;
@@ -113,6 +113,6 @@ jobs:
               }
             "
           else
-            echo "❌ coverage-summary.json not found! Check your Jest config."
+            echo "❌ coverage-summary.json not found!"
             exit 1
           fi
