@@ -7,51 +7,74 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Added explicit permissions for the default GITHUB_TOKEN
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
-      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use the built-in token instead of a manual PAT to avoid 'repo not exists'
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2️⃣ Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 18
+          cache: 'npm'
 
-      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # 4️⃣ Quick demo setup for LiveReview CLI
-      - name: Install LiveReview Demo
+      # 1️⃣ INSTALL WITHOUT SUDO: Install the CLI locally to the runner
+      - name: Install LiveReview CLI
         run: |
-          curl -fsSL https://raw.githubusercontent.com/HexmosTech/LiveReview/main/lrops.sh | \
-          sudo bash -s -- setup-demo --force
-      - name: Run LiveReview AI review
+          mkdir -p bin
+          curl -fsSL https://hexmos.com/lrc-install.sh | bash -s -- --install-dir ./bin
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+          # Force execute permissions just in case
+          chmod +x ./bin/lrc || true
+
+      # 2️⃣ RUN REVIEW: Use the local binary
+      - name: Run LiveReview AI Review
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: git lrc review --diff
-
-      # 6️⃣ Run unit tests with coverage
-      - name: Run unit tests
-        run: npm test -- --coverage
-
-      # 7️⃣ Extract and display coverage %
-      - name: Show Coverage %
         run: |
-          if [ -f coverage/coverage-summary.json ]; then
-            COVERAGE=$(node -e "console.log(require('./coverage/coverage-summary.json').total.lines.pct)")
-            echo "Coverage: $COVERAGE%"
-            echo "### ✅ Test Coverage: ${COVERAGE}%" >> $GITHUB_STEP_SUMMARY
+          git diff origin/prod > diff.txt
+          
+          # Check if the binary exists and run it
+          if [ -f "./bin/lrc" ]; then
+            ./bin/lrc review --diff diff.txt --api-key $GEMINI_API_KEY > review_result.txt
           else
-            echo "❌ coverage-summary.json not found"
+            # Fallback to npx if binary install failed
+            npx @hexmos/ipm i livereview
+            npx lrc review --diff diff.txt --api-key $GEMINI_API_KEY > review_result.txt
+          fi
+          
+          cat review_result.txt
+          if grep -iqE "error|critical" review_result.txt; then
+            echo "❌ AI Review found critical issues."
             exit 1
           fi
 
-      # 8️⃣ Upload HTML coverage report as artifact
-      - name: Upload Coverage Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage/lcov-report
+      # 3️⃣ TESTS & COVERAGE
+      - name: Run unit tests
+        run: npm test -- --coverage --watchAll=false --coverageReporters="json-summary"
+
+      - name: Enforce Coverage Gate (80%)
+        run: |
+          SUMMARY="./coverage/coverage-summary.json"
+          if [ -f "$SUMMARY" ]; then
+            node -e "
+              const summary = require('$SUMMARY');
+              const pct = summary.total.lines.pct;
+              console.log('📊 Coverage: ' + pct + '%');
+              if (pct < 80) process.exit(1);
+            "
+          else
+            echo "❌ No coverage summary found."
+            exit 1
+          fi
