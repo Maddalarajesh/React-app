@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 1️⃣ AI Review with Fixed API Pathing
+      # 1️⃣ AI Review with Updated 2026 Model (Gemini 2.5 Flash)
       - name: AI Code Review (Direct via Gemini)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -48,12 +48,10 @@ jobs:
 
           const options = {
             hostname: 'generativelanguage.googleapis.com',
-            // Updated to v1 and fixed the model pathing
-            path: '/v1/models/gemini-1.5-flash:generateContent?key=' + process.env.GEMINI_API_KEY,
+            // Updated to Gemini 2.5 Flash - The 2026 Stable Standard
+            path: '/v1/models/gemini-2.5-flash:generateContent?key=' + process.env.GEMINI_API_KEY,
             method: 'POST',
-            headers: { 
-              'Content-Type': 'application/json'
-            }
+            headers: { 'Content-Type': 'application/json' }
           };
 
           const req = https.request(options, (res) => {
@@ -62,28 +60,19 @@ jobs:
             res.on('end', () => {
               try {
                 const response = JSON.parse(body);
-                
                 if (response.error) {
                   console.error('❌ API Error:', response.error.message);
                   process.exit(1);
                 }
-
-                if (!response.candidates || response.candidates.length === 0) {
-                   console.error('❌ No candidates returned. Check safety settings or diff size.');
-                   process.exit(1);
-                }
-
                 const text = response.candidates[0].content.parts[0].text;
                 console.log('--- AI REVIEW RESULT ---');
                 console.log(text);
-
                 if (text.toUpperCase().includes('ERROR')) {
                   console.error('❌ AI detected issues!');
                   process.exit(1);
                 }
               } catch (e) {
-                console.error('❌ Parse Error. Status:', res.statusCode);
-                console.error('Body:', body);
+                console.error('❌ Status:', res.statusCode, 'Body:', body);
                 process.exit(1);
               }
             });
@@ -102,15 +91,12 @@ jobs:
       - name: Enforce Coverage Gate (80%)
         run: |
           SUMMARY="./coverage/coverage-summary.json"
-          if [ -f \"$SUMMARY\" ]; then
+          if [ -f "$SUMMARY" ]; then
             node -e "
               const summary = require('$SUMMARY');
               const pct = summary.total.lines.pct;
               console.log('📊 Current Coverage: ' + pct + '%');
-              if (pct < 80) {
-                console.error('❌ Coverage is below 80%!');
-                process.exit(1);
-              }
+              if (pct < 80) process.exit(1);
             "
           else
             echo "❌ coverage-summary.json not found!"
