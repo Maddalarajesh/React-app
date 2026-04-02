@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Install LiveReview
-        run: npm install -g github:hexmos/livereview  
+        run: npm install -g https://github.com/hexmos/livereview  
 
       # ✅ Install LiveReview
       # - name: Install LiveReview
