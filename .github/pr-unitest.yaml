@@ -23,5 +23,5 @@ jobs:
       - name: Run unit tests
         run: npm test -- --coverage --alluredir=allure-results
 
-      - name: Install Allure CLI
+      - name: Install Allure CL
         run: npm install -g allure-commandline
