@@ -24,4 +24,4 @@ jobs:
         run: npm test -- --coverage --alluredir=allure-results
 
       - name: Install Allure CLI
-        run: npm install -g allure-commandline
+        run: npm install -g allure-commandlin
