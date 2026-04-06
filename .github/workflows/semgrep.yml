@@ -1,8 +1,7 @@
 name: Semgrep
 
 on:
-  push:
-    branches: [ "prod" ]
+  
   pull_request:
     branches: [ "prod" ]
   schedule:
