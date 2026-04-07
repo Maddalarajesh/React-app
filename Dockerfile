@@ -6,8 +6,6 @@ WORKDIR /usr/src/app
 
 # Copy the full of our applications bundles
 COPY . /usr/src/app
-
-# Install our packages
 RUN npm install
 RUN npm run build
 EXPOSE 3000
