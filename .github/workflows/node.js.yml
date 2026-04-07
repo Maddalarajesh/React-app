@@ -1,4 +1,4 @@
-name:  CI-CD (Versioning + DockerHub)
+name: CI-CD (Versioning + DockerHub)
 
 permissions:
   contents: write
@@ -140,6 +140,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
+      # 🔥 NEW STEP ADDED HERE
+      - name: Sync if Manual
+        if: github.event_name == 'workflow_dispatch' && (github.ref_name == 'beta' || github.ref_name == 'prod')
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          if [[ "${{ github.ref_name }}" == "prod" ]]; then
+            SOURCE="beta"
+          else
+            SOURCE="develop"
+          fi
+
+          echo "🔄 Syncing $SOURCE → ${{ github.ref_name }}"
+
+          git fetch origin $SOURCE
+          git checkout ${{ github.ref_name }}
+
+          if ! git merge origin/$SOURCE --no-ff -m "chore: sync from $SOURCE"; then
+            echo "❌ Merge conflict detected. Please resolve manually."
+            exit 1
+          fi
+
+          git push origin ${{ github.ref_name }}
+
       - name: Summary
         run: |
           echo "=================================="
@@ -148,8 +175,6 @@ jobs:
           echo "Previous Version: ${{ needs.versioning.outputs.old_version }}"
           echo "New Version: ${{ needs.versioning.outputs.version }}"
           echo "=================================="
-
-      - uses: actions/checkout@v4
 
       # Login
       - name: Login to Docker Hub
