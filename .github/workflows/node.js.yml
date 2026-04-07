@@ -11,6 +11,15 @@ on:
       - prod
   workflow_dispatch:
     inputs:
+      branch:
+        description: "Select branch to deploy"
+        required: true
+        default: "beta"
+        type: choice
+        options:
+          - develop
+          - beta
+          - prod
       release_type:
         description: "Select release type"
         required: true
@@ -36,7 +45,8 @@ jobs:
 
       - id: detect
         run: |
-          BRANCH="${{ github.ref_name }}"
+          # Determine branch
+          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
           COMMIT_MSG=$(git log -1 --pretty=%B)
 
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
@@ -63,7 +73,6 @@ jobs:
   versioning:
     needs: setup
     runs-on: ubuntu-latest
-
     outputs:
       version: ${{ steps.calc.outputs.version }}
       old_version: ${{ steps.calc.outputs.old_version }}
@@ -89,18 +98,15 @@ jobs:
           git fetch --tags --force
 
           LAST_TAG=$(git tag --sort=-creatordate | head -n 1)
-
           if [ -z "$LAST_TAG" ]; then
             LAST_TAG="v1.0.0"
           fi
 
           VERSION=${LAST_TAG#v}
           BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
-
           IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
           TYPE=${{ steps.type.outputs.type }}
-
           echo "📌 Previous Version: $LAST_TAG"
           echo "📌 Change Type: $TYPE"
 
@@ -108,12 +114,10 @@ jobs:
             PATCH=$((PATCH+1))
             DATE=$(date +%Y-%m-%d)
             NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
-
           elif [[ "$TYPE" == "minor" ]]; then
             MINOR=$((MINOR+1))
             PATCH=0
             NEW_TAG="v$MAJOR.$MINOR.$PATCH"
-
           elif [[ "$TYPE" == "major" ]]; then
             MAJOR=$((MAJOR+1))
             MINOR=0
@@ -141,57 +145,59 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # 🔥 NEW STEP ADDED HERE
-      - name: Sync if Manual
-        if: github.event_name == 'workflow_dispatch' && (github.ref_name == 'beta' || github.ref_name == 'prod')
+      # 🔄 Sync develop → beta/prod
+      - name: Sync Branches
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          if [[ "${{ github.ref_name }}" == "prod" ]]; then
+          TARGET="${{ needs.setup.outputs.branch }}"
+          if [[ "$TARGET" == "prod" ]]; then
             SOURCE="beta"
-          else
+          elif [[ "$TARGET" == "beta" ]]; then
             SOURCE="develop"
+          else
+            echo "No sync required for develop"
+            exit 0
           fi
 
-          echo "🔄 Syncing $SOURCE → ${{ github.ref_name }}"
+          echo "🔄 Syncing $SOURCE → $TARGET"
 
-          git fetch origin $SOURCE
-          git checkout ${{ github.ref_name }}
-
+          git fetch --all
+          git checkout $TARGET
           if ! git merge origin/$SOURCE --no-ff -m "chore: sync from $SOURCE"; then
-            echo "❌ Merge conflict detected. Please resolve manually."
+            echo "❌ Merge conflict detected. Resolve manually."
             exit 1
           fi
+          git push origin $TARGET
 
-          git push origin ${{ github.ref_name }}
-
-      - name: Summary
+      - name: Deployment Summary
         run: |
           echo "=================================="
-          echo "Deployment Summary"
           echo "Branch: ${{ needs.setup.outputs.branch }}"
           echo "Previous Version: ${{ needs.versioning.outputs.old_version }}"
           echo "New Version: ${{ needs.versioning.outputs.version }}"
           echo "=================================="
 
-      # Login
+      # Docker Login
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Build
+      # Build Docker Image with caching
       - name: Build Docker Image
         run: |
           IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
           TAG=${{ needs.versioning.outputs.version }}
 
-          docker build -t $IMAGE:$TAG .
+          docker build --cache-from $IMAGE:latest -t $IMAGE:$TAG .
 
-      # Push
+      # Push Docker Image
       - name: Push Docker Image
         run: |
           IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
