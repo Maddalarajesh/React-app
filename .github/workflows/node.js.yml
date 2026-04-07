@@ -1,4 +1,4 @@
-name: CI-CD (Clean Versioning Flow)
+name: CI-CD (Advanced Versioning + DockerHub)
 
 permissions:
   contents: write
@@ -11,6 +11,10 @@ on:
       - prod
 
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional: Enter version (e.g., v1.2.3) for rollback"
+        required: false
 
 jobs:
   setup:
@@ -22,8 +26,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - id: set
-        run: |
-          echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+        run: echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
 
   # =========================
   # VERSIONING (ONLY DEVELOP)
@@ -68,11 +71,11 @@ jobs:
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
   # =========================
-  # GET VERSION (BETA / PROD)
+  # GET VERSION (SMART LOGIC)
   # =========================
   get-version:
     needs: setup
-    if: needs.setup.outputs.branch != 'develop'
+    if: needs.setup.outputs.branch != 'develop' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     outputs:
@@ -83,26 +86,45 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Show Available Versions
+        run: |
+          echo "📦 Available Versions:"
+          git fetch --tags
+          git tag --sort=-creatordate | head -n 10
+
       - id: get
         run: |
           git fetch --tags
 
-          VERSION=$(git tag --contains HEAD | head -n 1)
+          # 1️⃣ Manual rollback input
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "🔁 Rollback / Manual version selected: $VERSION"
 
-          if [ -z "$VERSION" ]; then
-            echo "❌ ERROR: No version tag found for this commit"
-            echo "👉 Fix: Ensure commit is tagged in develop"
-            exit 1
+            if ! git rev-parse "$VERSION" >/dev/null 2>&1; then
+              echo "❌ ERROR: Tag does not exist"
+              exit 1
+            fi
+
+          # 2️⃣ Auto detect from commit (best for cherry-pick)
+          else
+            VERSION=$(git tag --contains HEAD | head -n 1)
+
+            # 3️⃣ Fallback → latest version
+            if [ -z "$VERSION" ]; then
+              echo "⚠️ No tag found on commit, using latest version"
+              VERSION=$(git describe --tags --abbrev=0)
+            fi
           fi
 
-          echo "Detected version: $VERSION"
+          echo "✅ Final Version: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
   # =========================
-  # BUILD / DEPLOY
+  # DEPLOY
   # =========================
   deploy:
-    needs: [setup, versioning, get-version]
+    needs: setup
     runs-on: ubuntu-latest
 
     steps:
@@ -119,34 +141,34 @@ jobs:
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Show Version
+      - name: Deployment Summary
         run: |
           echo "=================================="
-          echo "🚀 Version: ${{ steps.select.outputs.version }}"
+          echo "🚀 Deploying Version: ${{ steps.select.outputs.version }}"
           echo "🌿 Branch: ${{ needs.setup.outputs.branch }}"
           echo "=================================="
 
-      - name: Login to DockerHub
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # Build ONLY in develop
+      # DEVELOP → BUILD NEW IMAGE
       - name: Build & Push (Develop)
         if: needs.setup.outputs.branch == 'develop'
         run: |
-          IMAGE=${{ secrets.DOCKER_USERNAME }}/app
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
           TAG=${{ steps.select.outputs.version }}
 
           docker build -t $IMAGE:$TAG .
           docker push $IMAGE:$TAG
 
-      # Reuse in beta/prod
-      - name: Use Existing Image (Beta/Prod)
+      # BETA / PROD → REUSE IMAGE
+      - name: Use Existing Image
         if: needs.setup.outputs.branch != 'develop'
         run: |
-          IMAGE=${{ secrets.DOCKER_USERNAME }}/app
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
           TAG=${{ steps.select.outputs.version }}
 
-          echo "Using existing image: $IMAGE:$TAG"
+          echo "✅ Using existing image: $IMAGE:$TAG"
