@@ -1,4 +1,4 @@
-name: CI-CD (Versioning + DockerHub)
+name: CI-CD (Auto Versioning + DockerHub)
 
 permissions:
   contents: write
@@ -9,22 +9,6 @@ on:
       - develop
       - beta
       - prod
-
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Enter version tag (e.g., v1.2.3)"
-        required: false
-
-      release_type:
-        description: "Select release type (only for develop)"
-        required: false
-        default: "patch"
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
 
 jobs:
   # =========================
@@ -74,16 +58,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - id: type
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.release_type }}" ]]; then
-            TYPE="${{ github.event.inputs.release_type }}"
-          else
-            TYPE="${{ needs.setup.outputs.change_type }}"
-          fi
-
-          echo "type=$TYPE" >> $GITHUB_OUTPUT
-
       - id: calc
         run: |
           git fetch --tags --force
@@ -99,7 +73,7 @@ jobs:
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
-          TYPE=${{ steps.type.outputs.type }}
+          TYPE="${{ needs.setup.outputs.change_type }}"
 
           if [[ "$TYPE" == "patch" ]]; then
             PATCH=$((PATCH+1))
@@ -123,13 +97,11 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-            git tag -a $NEW_TAG -m "Release $NEW_TAG"
-            git push origin $NEW_TAG
-          fi
+          git tag -a $NEW_TAG -m "Release $NEW_TAG"
+          git push origin $NEW_TAG
 
   # =========================
-  # GET VERSION (BETA / PROD)
+  # GET VERSION (AUTO FOR BETA / PROD)
   # =========================
   get-version:
     needs: setup
@@ -148,28 +120,12 @@ jobs:
         run: |
           git fetch --tags --force
 
-          # Priority 1: Manual input
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.version }}" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
-            echo "✅ Manual version selected: $VERSION"
+          VERSION=$(git tag --contains HEAD | head -n 1)
 
-            # Validate tag exists
-            if ! git rev-parse "$VERSION" >/dev/null 2>&1; then
-              echo "❌ ERROR: Tag $VERSION does not exist"
-              exit 1
-            fi
-
-          else
-            # Priority 2: Detect from commit (cherry-pick safe)
-            VERSION=$(git tag --contains HEAD | head -n 1)
-
-            if [ -z "$VERSION" ]; then
-              echo "❌ ERROR: No version tag found for this commit"
-              echo "👉 Ensure this change was tagged in develop"
-              exit 1
-            fi
-
-            echo "✅ Detected version from commit: $VERSION"
+          if [ -z "$VERSION" ]; then
+            echo "❌ ERROR: No version tag found for this commit"
+            echo "👉 Ensure this commit was tagged in develop"
+            exit 1
           fi
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -208,8 +164,7 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # BUILD ONLY IN DEVELOP
-      - name: Build Docker Image
+      - name: Build & Push (Develop Only)
         if: needs.setup.outputs.branch == 'develop'
         run: |
           IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
@@ -218,8 +173,7 @@ jobs:
           docker build -t $IMAGE:$TAG .
           docker push $IMAGE:$TAG
 
-      # REUSE IMAGE IN BETA / PROD
-      - name: Use Existing Image
+      - name: Use Existing Image (Beta/Prod)
         if: needs.setup.outputs.branch != 'develop'
         run: |
           IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
