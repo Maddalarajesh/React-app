@@ -1,4 +1,4 @@
-name: CI-CD (Advanced Versioning + DockerHub)
+name:  CI-CD (Versioning + DockerHub)
 
 permissions:
   contents: write
@@ -9,44 +9,84 @@ on:
       - develop
       - beta
       - prod
-
   workflow_dispatch:
     inputs:
-      version:
-        description: "Optional: Enter version (e.g., v1.2.3) for rollback"
-        required: false
+      release_type:
+        description: "Select release type"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
+  # =========================
+  # SETUP
+  # =========================
   setup:
     runs-on: ubuntu-latest
     outputs:
-      branch: ${{ steps.set.outputs.branch }}
+      change_type: ${{ steps.detect.outputs.change_type }}
+      branch: ${{ steps.detect.outputs.branch }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - id: set
-        run: echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+      - id: detect
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+          echo "🔍 Commit message:"
+          echo "$COMMIT_MSG"
+
+          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
+            TYPE="major"
+          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
+            TYPE="minor"
+          elif [[ "$COMMIT_MSG" == *"bugfix/"* ]] || [[ "$COMMIT_MSG" == *"hotfix/"* ]]; then
+            TYPE="patch"
+          else
+            TYPE="patch"
+          fi
+
+          echo "change_type=$TYPE" >> $GITHUB_OUTPUT
+          echo "✅ Detected change type: $TYPE"
 
   # =========================
-  # VERSIONING (ONLY DEVELOP)
+  # VERSIONING
   # =========================
   versioning:
     needs: setup
-    if: needs.setup.outputs.branch == 'develop'
     runs-on: ubuntu-latest
 
     outputs:
-      version: ${{ steps.tag.outputs.version }}
+      version: ${{ steps.calc.outputs.version }}
+      old_version: ${{ steps.calc.outputs.old_version }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - id: tag
+      - id: type
         run: |
-          git fetch --tags
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TYPE="${{ github.event.inputs.release_type }}"
+            echo "Manual override: $TYPE"
+          else
+            TYPE="${{ needs.setup.outputs.change_type }}"
+          fi
+
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
+
+      - id: calc
+        run: |
+          git fetch --tags --force
 
           LAST_TAG=$(git tag --sort=-creatordate | head -n 1)
 
@@ -55,120 +95,81 @@ jobs:
           fi
 
           VERSION=${LAST_TAG#v}
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
 
-          PATCH=$((PATCH+1))
-          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
-          echo "Creating version: $NEW_TAG"
+          TYPE=${{ steps.type.outputs.type }}
+
+          echo "📌 Previous Version: $LAST_TAG"
+          echo "📌 Change Type: $TYPE"
+
+          if [[ "$TYPE" == "patch" ]]; then
+            PATCH=$((PATCH+1))
+            DATE=$(date +%Y-%m-%d)
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
+
+          elif [[ "$TYPE" == "minor" ]]; then
+            MINOR=$((MINOR+1))
+            PATCH=0
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+          elif [[ "$TYPE" == "major" ]]; then
+            MAJOR=$((MAJOR+1))
+            MINOR=0
+            PATCH=0
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+          fi
+
+          echo "old_version=$LAST_TAG" >> $GITHUB_OUTPUT
+          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          git tag -a $NEW_TAG -m "Release $NEW_TAG"
-          git push origin $NEW_TAG
-
-          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
-
-  # =========================
-  # GET VERSION (SMART LOGIC)
-  # =========================
-  get-version:
-    needs: setup
-    if: needs.setup.outputs.branch != 'develop' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-
-    outputs:
-      version: ${{ steps.get.outputs.version }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Show Available Versions
-        run: |
-          echo "📦 Available Versions:"
-          git fetch --tags
-          git tag --sort=-creatordate | head -n 10
-
-      - id: get
-        run: |
-          git fetch --tags
-
-          # 1️⃣ Manual rollback input
-          if [[ -n "${{ github.event.inputs.version }}" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
-            echo "🔁 Rollback / Manual version selected: $VERSION"
-
-            if ! git rev-parse "$VERSION" >/dev/null 2>&1; then
-              echo "❌ ERROR: Tag does not exist"
-              exit 1
-            fi
-
-          # 2️⃣ Auto detect from commit (best for cherry-pick)
-          else
-            VERSION=$(git tag --contains HEAD | head -n 1)
-
-            # 3️⃣ Fallback → latest version
-            if [ -z "$VERSION" ]; then
-              echo "⚠️ No tag found on commit, using latest version"
-              VERSION=$(git describe --tags --abbrev=0)
-            fi
+          if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            git tag -a $NEW_TAG -m "Release $NEW_TAG"
+            git push origin $NEW_TAG
           fi
 
-          echo "✅ Final Version: $VERSION"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
   # =========================
-  # DEPLOY
+  # BUILD & PUSH TO DOCKER HUB
   # =========================
-  deploy:
-    needs: setup
+  build-and-deploy:
+    needs: [setup, versioning]
     runs-on: ubuntu-latest
 
     steps:
+      - name: Summary
+        run: |
+          echo "=================================="
+          echo "Deployment Summary"
+          echo "Branch: ${{ needs.setup.outputs.branch }}"
+          echo "Previous Version: ${{ needs.versioning.outputs.old_version }}"
+          echo "New Version: ${{ needs.versioning.outputs.version }}"
+          echo "=================================="
+
       - uses: actions/checkout@v4
 
-      - name: Select Version
-        id: select
-        run: |
-          if [[ "${{ needs.setup.outputs.branch }}" == "develop" ]]; then
-            VERSION="${{ needs.versioning.outputs.version }}"
-          else
-            VERSION="${{ needs.get-version.outputs.version }}"
-          fi
-
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Deployment Summary
-        run: |
-          echo "=================================="
-          echo "🚀 Deploying Version: ${{ steps.select.outputs.version }}"
-          echo "🌿 Branch: ${{ needs.setup.outputs.branch }}"
-          echo "=================================="
-
+      # Login
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # DEVELOP → BUILD NEW IMAGE
-      - name: Build & Push (Develop)
-        if: needs.setup.outputs.branch == 'develop'
+      # Build
+      - name: Build Docker Image
         run: |
           IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
-          TAG=${{ steps.select.outputs.version }}
+          TAG=${{ needs.versioning.outputs.version }}
 
           docker build -t $IMAGE:$TAG .
-          docker push $IMAGE:$TAG
 
-      # BETA / PROD → REUSE IMAGE
-      - name: Use Existing Image
-        if: needs.setup.outputs.branch != 'develop'
+      # Push
+      - name: Push Docker Image
         run: |
           IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
-          TAG=${{ steps.select.outputs.version }}
+          TAG=${{ needs.versioning.outputs.version }}
 
-          echo "✅ Using existing image: $IMAGE:$TAG"
+          docker push $IMAGE:$TAG
