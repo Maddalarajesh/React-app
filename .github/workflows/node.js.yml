@@ -28,8 +28,6 @@ jobs:
       change_type: ${{ steps.detect.outputs.change_type }}
       branch: ${{ steps.detect.outputs.branch }}
       is_tag: ${{ steps.detect.outputs.is_tag }}
-      # Dynamic Runner: master uses prod runner, others use backend runner
-      runner: ${{ (github.event.inputs.branch || github.ref_name) == 'master' && 'deepcarve-backend-prod' || 'backend' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +37,6 @@ jobs:
           BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           
-          # Detect if we are running from a Tag (for promotion)
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             echo "is_tag=true" >> $GITHUB_OUTPUT
           else
@@ -54,7 +51,6 @@ jobs:
 
   versioning:
     needs: setup
-    # Skip if running from an existing tag or not on develop
     if: github.ref_name == 'develop' && needs.setup.outputs.is_tag == 'false'
     runs-on: ubuntu-latest
     outputs:
@@ -106,14 +102,14 @@ jobs:
 
   build-and-deploy:
     needs: [setup, versioning]
-    if: always()
-    # Dynamic Runner Selection
-    runs-on: [self-hosted, linux, "${{ needs.setup.outputs.runner }}"]
+    runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # 🔁 Promotion Logic
       - name: Sync and Promote
         run: |
           git config user.name "github-actions"
@@ -130,28 +126,26 @@ jobs:
             git push origin $TARGET
           fi
 
+      # 🐳 Build + Push (FIXED)
       - name: Build and Push Docker
         run: |
-          # DYNAMIC REPOSITORY MAPPING
-          TARGET_BRANCH="${{ needs.setup.outputs.branch }}"
-          
-          if [[ "$TARGET_BRANCH" == "master" ]]; then
-            REPO="prod-test"
-          elif [[ "$TARGET_BRANCH" == "stage" ]]; then
-            REPO="stage-test"
-          else
-            REPO="aesthisia-demo"
+          FINAL_TAG="${{ needs.versioning.outputs.version || github.ref_name }}"
+          TARGET="${{ needs.setup.outputs.branch }}"
+
+          echo "Deploying Version: $FINAL_TAG to $TARGET"
+
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+          # 🔥 Dynamic repo selection
+          if [[ "$TARGET" == "develop" ]]; then
+            IMAGE="rajeshmaddala/aesthisia-demo"
+          elif [[ "$TARGET" == "stage" ]]; then
+            IMAGE="rajeshmaddala/stage-test"
+          elif [[ "$TARGET" == "master" ]]; then
+            IMAGE="rajeshmaddala/prod-test"
           fi
 
-          # Using your specific username: rajeshmaddala
-          IMAGE="rajeshmaddala/$REPO"
-          
-          # Use version from versioning job OR the tag name from the UI
-          FINAL_TAG="${{ needs.versioning.outputs.version || github.ref_name }}"
-          
-          echo "🚀 Pushing to Repository: $IMAGE"
-          echo "📌 Version Tag: $FINAL_TAG"
-          
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          echo "Using IMAGE: $IMAGE"
+
           docker build -t $IMAGE:$FINAL_TAG .
           docker push $IMAGE:$FINAL_TAG
