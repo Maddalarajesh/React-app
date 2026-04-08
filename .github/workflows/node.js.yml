@@ -1,57 +1,27 @@
-name: CI-CD (Versioning + DockerHub)
+name: CI-CD (Versioning + DockerHub - Promotion Ready)
 
 permissions:
   contents: write
 
 on:
   push:
-    branches: [develop, stage, master]
+    branches: [develop]
   workflow_dispatch:
     inputs:
-      branch:
-        description: "Select destination branch"
+      tag:
+        description: "Enter version tag (e.g., v1.2.3)"
         required: true
-        default: "stage"
-        type: choice
-        options: [develop, stage, master]
-      release_type:
-        description: "Select release type (Only for Develop)"
+      target:
+        description: "Select environment"
         required: true
-        default: "patch"
         type: choice
-        options: [patch, minor, major]
+        options: [stage, master]
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      change_type: ${{ steps.detect.outputs.change_type }}
-      branch: ${{ steps.detect.outputs.branch }}
-      is_tag: ${{ steps.detect.outputs.is_tag }}
 
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: detect
-        run: |
-          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-          
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "is_tag=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_tag=false" >> $GITHUB_OUTPUT
-          fi
-
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then TYPE="major"
-          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then TYPE="minor"
-          else TYPE="patch"; fi
-          echo "change_type=$TYPE" >> $GITHUB_OUTPUT
-
-  versioning:
-    needs: setup
-    if: github.ref_name == 'develop' && needs.setup.outputs.is_tag == 'false'
+  # 🔹 STEP 1: VERSION + BUILD (ONLY FOR DEVELOP)
+  build-dev:
+    if: github.ref_name == 'develop'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.calc.outputs.version }}
@@ -61,15 +31,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - id: type
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "type=${{ github.event.inputs.release_type }}" >> $GITHUB_OUTPUT
-          else
-            echo "type=${{ needs.setup.outputs.change_type }}" >> $GITHUB_OUTPUT
-          fi
-
-      - id: calc
+      - name: Calculate Version
+        id: calc
         run: |
           git fetch --tags --force
           LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
@@ -79,73 +42,59 @@ jobs:
           BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
           IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
-          TYPE=${{ steps.type.outputs.type }}
-
-          if [[ "$TYPE" == "patch" ]]; then
-            PATCH=$((PATCH+1))
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$(date +%Y-%m-%d)"
-          elif [[ "$TYPE" == "minor" ]]; then
-            NEW_TAG="v$MAJOR.$((MINOR+1)).0"
-          elif [[ "$TYPE" == "major" ]]; then
-            NEW_TAG="v$((MAJOR+1)).0.0"
-          fi
+          PATCH=$((PATCH+1))
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH-$(date +%Y-%m-%d)"
 
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
-          
+
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          
+
           if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
             git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
             git push origin "$NEW_TAG"
           fi
 
-  build-and-deploy:
-    needs: [setup, versioning]
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # 🔁 Promotion Logic
-      - name: Sync and Promote
+      - name: Build & Push Dev Image
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          
-          TARGET="${{ needs.setup.outputs.branch }}"
-          SOURCE_REF="${{ github.ref_name }}"
-
-          if [[ "$TARGET" != "develop" ]]; then
-            echo "🚀 Promoting $SOURCE_REF to $TARGET"
-            git fetch --all
-            git checkout $TARGET
-            git merge $SOURCE_REF --no-ff -m "chore: promote $SOURCE_REF to $TARGET"
-            git push origin $TARGET
-          fi
-
-      # 🐳 Build + Push (FIXED)
-      - name: Build and Push Docker
-        run: |
-          FINAL_TAG="${{ needs.versioning.outputs.version || github.ref_name }}"
-          TARGET="${{ needs.setup.outputs.branch }}"
-
-          echo "Deploying Version: $FINAL_TAG to $TARGET"
+          VERSION="${{ steps.calc.outputs.version }}"
+          IMAGE="rajeshmaddala/aesthisia-demo"
 
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-          # 🔥 Dynamic repo selection
-          if [[ "$TARGET" == "develop" ]]; then
-            IMAGE="rajeshmaddala/aesthisia-demo"
-          elif [[ "$TARGET" == "stage" ]]; then
-            IMAGE="rajeshmaddala/stage-test"
+          docker build -t $IMAGE:$VERSION .
+          docker push $IMAGE:$VERSION
+
+  # 🔹 STEP 2: PROMOTION (NO REBUILD)
+  promote:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set Variables
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          TARGET="${{ github.event.inputs.target }}"
+
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "TARGET=$TARGET" >> $GITHUB_ENV
+
+          if [[ "$TARGET" == "stage" ]]; then
+            echo "DEST_IMAGE=rajeshmaddala/stage-test" >> $GITHUB_ENV
           elif [[ "$TARGET" == "master" ]]; then
-            IMAGE="rajeshmaddala/prod-test"
+            echo "DEST_IMAGE=rajeshmaddala/prod-test" >> $GITHUB_ENV
           fi
 
-          echo "Using IMAGE: $IMAGE"
+          echo "SOURCE_IMAGE=rajeshmaddala/aesthisia-demo" >> $GITHUB_ENV
 
-          docker build -t $IMAGE:$FINAL_TAG .
-          docker push $IMAGE:$FINAL_TAG
+      - name: Docker Login
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Promote Image (No Rebuild 🚀)
+        run: |
+          echo "Promoting $SOURCE_IMAGE:$TAG → $DEST_IMAGE:$TAG"
+
+          docker pull $SOURCE_IMAGE:$TAG
+          docker tag $SOURCE_IMAGE:$TAG $DEST_IMAGE:$TAG
+          docker push $DEST_IMAGE:$TAG
