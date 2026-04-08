@@ -5,15 +5,15 @@ permissions:
 
 on:
   push:
-    branches: [develop, beta, prod]
+    branches: [develop, stage, master]
   workflow_dispatch:
     inputs:
       branch:
         description: "Select destination branch"
         required: true
-        default: "beta"
+        default: "stage"
         type: choice
-        options: [develop, beta, prod]
+        options: [develop, stage, master]
       release_type:
         description: "Select release type (Only for Develop)"
         required: true
