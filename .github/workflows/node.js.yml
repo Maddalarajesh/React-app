@@ -1,4 +1,4 @@
-name: CI-CD (Tag-Based Promotion)
+name: CI-CD (Versioning + DockerHub)
 
 permissions:
   contents: write
@@ -9,44 +9,87 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Destination branch (e.g., beta)"
+        description: "Select branch to deploy"
         required: true
         default: "beta"
         type: choice
         options: [develop, beta, prod]
 
 jobs:
-  deploy:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.vars.outputs.branch }}
+      is_tag: ${{ steps.vars.outputs.is_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: vars
+        run: |
+          echo "branch=${{ github.event.inputs.branch || github.ref_name }}" >> $GITHUB_OUTPUT
+          # Check if the current run is based on a tag (e.g., v1.0.3)
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+          fi
+
+  versioning:
+    needs: setup
+    # FIXED: Added quotes and proper check to skip if we are running from an existing tag
+    if: github.ref_name == 'develop' && needs.setup.outputs.is_tag == 'false'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: calc
+        run: |
+          git fetch --tags --force
+          LAST_TAG=$(git tag --sort=-creatordate | head -n 1 || echo "v1.0.0")
+          # ... (Keep your existing version calculation logic here) ...
+          NEW_TAG="v1.0.3" # Placeholder
+          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
+          
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git tag -a $NEW_TAG -m "Release $NEW_TAG"
+          git push origin $NEW_TAG
+
+  build-and-deploy:
+    needs: [setup, versioning]
+    if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: [actions/checkout](https://github.com)@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Ensures tags are available
+          fetch-depth: 0
 
       - name: Sync and Promote
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           
-          # If you selected a tag in the UI, GITHUB_REF_NAME will be that tag (v1.0.3)
+          TARGET="${{ needs.setup.outputs.branch }}"
           SOURCE_REF="${{ github.ref_name }}"
-          TARGET="${{ inputs.branch }}"
-          
-          echo "🚀 Promoting $SOURCE_REF to $TARGET"
-          
+
           if [[ "$TARGET" != "develop" ]]; then
+            echo "🚀 Promoting $SOURCE_REF to $TARGET"
+            git fetch --all
             git checkout $TARGET
-            # Merges only the code from the selected tag into the target branch
+            # Merges the specific code from the selected Tag/Branch
             git merge $SOURCE_REF --no-ff -m "chore: promote $SOURCE_REF to $TARGET"
             git push origin $TARGET
           fi
 
       - name: Docker Push
         run: |
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-          IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
-          TAG="${{ github.ref_name }}"
+          # Use either the new version from 'versioning' or the existing tag name
+          FINAL_TAG="${{ needs.versioning.outputs.version || github.ref_name }}"
+          echo "Building Docker image with tag: $FINAL_TAG"
           
-          docker build -t $IMAGE:$TAG .
-          docker push $IMAGE:$TAG
+          IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          docker build -t $IMAGE:$FINAL_TAG .
+          docker push $IMAGE:$FINAL_TAG
