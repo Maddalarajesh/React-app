@@ -1,72 +1,62 @@
-name:  CI-CD (Versioning + DockerHub)
+name: CI-CD (Versioning + DockerHub)
 
 permissions:
   contents: write
 
 on:
   push:
-    branches:
-      - develop
-      - beta
-      - prod
+    branches: [develop, beta, prod]
   workflow_dispatch:
     inputs:
+      branch:
+        description: "Select destination branch"
+        required: true
+        default: "beta"
+        type: choice
+        options: [develop, beta, prod]
       release_type:
-        description: "Select release type"
+        description: "Select release type (Only for Develop)"
         required: true
         default: "patch"
         type: choice
-        options:
-          - patch
-          - minor
-          - major
+        options: [patch, minor, major]
 
 jobs:
-  # =========================
-  # SETUP
-  # =========================
   setup:
     runs-on: ubuntu-latest
     outputs:
       change_type: ${{ steps.detect.outputs.change_type }}
       branch: ${{ steps.detect.outputs.branch }}
+      is_tag: ${{ steps.detect.outputs.is_tag }}
 
     steps:
       - uses: actions/checkout@v4
 
       - id: detect
         run: |
-          BRANCH="${{ github.ref_name }}"
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-
+          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-
-          echo "🔍 Commit message:"
-          echo "$COMMIT_MSG"
-
-          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
-            TYPE="major"
-          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
-            TYPE="minor"
-          elif [[ "$COMMIT_MSG" == *"bugfix/"* ]] || [[ "$COMMIT_MSG" == *"hotfix/"* ]]; then
-            TYPE="patch"
+          
+          # Detect if we are running from a Tag (for promotion)
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "is_tag=true" >> $GITHUB_OUTPUT
           else
-            TYPE="patch"
+            echo "is_tag=false" >> $GITHUB_OUTPUT
           fi
 
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then TYPE="major"
+          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then TYPE="minor"
+          else TYPE="patch"; fi
           echo "change_type=$TYPE" >> $GITHUB_OUTPUT
-          echo "✅ Detected change type: $TYPE"
 
-  # =========================
-  # VERSIONING
-  # =========================
   versioning:
     needs: setup
+    # Skip if running from an existing tag or not on develop
+    if: github.ref_name == 'develop' && needs.setup.outputs.is_tag == 'false'
     runs-on: ubuntu-latest
-
     outputs:
       version: ${{ steps.calc.outputs.version }}
-      old_version: ${{ steps.calc.outputs.old_version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -76,100 +66,75 @@ jobs:
       - id: type
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            TYPE="${{ github.event.inputs.release_type }}"
-            echo "Manual override: $TYPE"
+            echo "type=${{ github.event.inputs.release_type }}" >> $GITHUB_OUTPUT
           else
-            TYPE="${{ needs.setup.outputs.change_type }}"
+            echo "type=${{ needs.setup.outputs.change_type }}" >> $GITHUB_OUTPUT
           fi
-
-          echo "type=$TYPE" >> $GITHUB_OUTPUT
 
       - id: calc
         run: |
           git fetch --tags --force
-
-          LAST_TAG=$(git tag --sort=-creatordate | head -n 1)
-
-          if [ -z "$LAST_TAG" ]; then
-            LAST_TAG="v1.0.0"
-          fi
+          LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
+          if [ -z "$LAST_TAG" ]; then LAST_TAG="v1.0.0"; fi
 
           VERSION=${LAST_TAG#v}
           BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
-
           IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
           TYPE=${{ steps.type.outputs.type }}
 
-          echo "📌 Previous Version: $LAST_TAG"
-          echo "📌 Change Type: $TYPE"
-
           if [[ "$TYPE" == "patch" ]]; then
             PATCH=$((PATCH+1))
-            DATE=$(date +%Y-%m-%d)
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
-
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$(date +%Y-%m-%d)"
           elif [[ "$TYPE" == "minor" ]]; then
-            MINOR=$((MINOR+1))
-            PATCH=0
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
-
+            NEW_TAG="v$MAJOR.$((MINOR+1)).0"
           elif [[ "$TYPE" == "major" ]]; then
-            MAJOR=$((MAJOR+1))
-            MINOR=0
-            PATCH=0
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+            NEW_TAG="v$((MAJOR+1)).0.0"
           fi
 
-          echo "old_version=$LAST_TAG" >> $GITHUB_OUTPUT
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
-
+          
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-
+          
+          # Safety check: Only push if tag doesn't exist
           if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
-            git tag -a $NEW_TAG -m "Release $NEW_TAG"
-            git push origin $NEW_TAG
+            git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
+            git push origin "$NEW_TAG"
           fi
 
-  # =========================
-  # BUILD & PUSH TO DOCKER HUB
-  # =========================
   build-and-deploy:
     needs: [setup, versioning]
+    if: always()
     runs-on: ubuntu-latest
-
     steps:
-      - name: Summary
-        run: |
-          echo "=================================="
-          echo "Deployment Summary"
-          echo "Branch: ${{ needs.setup.outputs.branch }}"
-          echo "Previous Version: ${{ needs.versioning.outputs.old_version }}"
-          echo "New Version: ${{ needs.versioning.outputs.version }}"
-          echo "=================================="
-
       - uses: actions/checkout@v4
-
-      # Login
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          fetch-depth: 0
 
-      # Build
-      - name: Build Docker Image
+      - name: Sync and Promote
         run: |
-          IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
-          TAG=${{ needs.versioning.outputs.version }}
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          
+          TARGET="${{ needs.setup.outputs.branch }}"
+          SOURCE_REF="${{ github.ref_name }}"
 
-          docker build -t $IMAGE:$TAG .
+          if [[ "$TARGET" != "develop" ]]; then
+            echo "🚀 Promoting $SOURCE_REF to $TARGET"
+            git fetch --all
+            git checkout $TARGET
+            git merge $SOURCE_REF --no-ff -m "chore: promote $SOURCE_REF to $TARGET"
+            git push origin $TARGET
+          fi
 
-      # Push
-      - name: Push Docker Image
+      - name: Build and Push Docker
         run: |
+          # Use version from versioning job OR the tag name from the UI
+          FINAL_TAG="${{ needs.versioning.outputs.version || github.ref_name }}"
+          echo "Deploying Version: $FINAL_TAG"
+          
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
           IMAGE=${{ secrets.DOCKER_USERNAME }}/aesthisia-demo
-          TAG=${{ needs.versioning.outputs.version }}
-
-          docker push $IMAGE:$TAG
+          docker build -t $IMAGE:$FINAL_TAG .
+          docker push $IMAGE:$FINAL_TAG
