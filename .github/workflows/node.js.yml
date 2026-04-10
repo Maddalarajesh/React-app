@@ -1,11 +1,11 @@
 name: CI-CD (Versioning + DockerHub)
 
-permissions:
-  contents: write
+# permissions:
+#   contents: write
 
 on:
   push:
-    branches: [develop, stage, master]
+    branches: [develop, qa, master]
   workflow_dispatch:
     inputs:
       branch:
@@ -13,7 +13,7 @@ on:
         required: true
         default: "stage"
         type: choice
-        options: [develop, stage, master]
+        options: [develop, qa, master]
       release_type:
         description: "Select release type (Only for Develop)"
         required: true
@@ -55,6 +55,8 @@ jobs:
     # Skip if running from an existing tag or not on develop
     if: github.ref_name == 'develop' && needs.setup.outputs.is_tag == 'false'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.calc.outputs.version }}
 
