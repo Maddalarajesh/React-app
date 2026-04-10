@@ -11,7 +11,7 @@ on:
       branch:
         description: "Select destination branch"
         required: true
-        default: "stage"
+        default: "qa"
         type: choice
         options: [develop, qa, master]
       release_type:
@@ -145,7 +145,7 @@ jobs:
           # 🔥 Dynamic repo selection based on branch
           if [[ "$TARGET" == "develop" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo"
-          elif [[ "$TARGET" == "stage" ]]; then
+          elif [[ "$TARGET" == "qa" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
           elif [[ "$TARGET" == "master" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
