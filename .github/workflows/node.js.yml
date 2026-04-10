@@ -108,6 +108,8 @@ jobs:
   build-and-deploy:
     needs: [setup, versioning]
     if: always()
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
