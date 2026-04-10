@@ -1,149 +1,157 @@
-name: CI
+name: CI-CD (Versioning + DockerHub)
 
-permissions:
-  contents: write
+# permissions:
+#   contents: write
 
 on:
   push:
-    branches:
-      - main
+    branches: [develop, qa, master]
   workflow_dispatch:
     inputs:
+      branch:
+        description: "Select destination branch"
+        required: true
+        default: "stage"
+        type: choice
+        options: [develop, qa, master]
       release_type:
-        description: "Select release type (for manual runs)"
+        description: "Select release type (Only for Develop)"
         required: true
         default: "patch"
         type: choice
-        options:
-          - patch
-          - minor
-          - major
+        options: [patch, minor, major]
 
 jobs:
-  versioning:
+  setup:
     runs-on: ubuntu-latest
-
     outputs:
-      deploy: ${{ steps.type.outputs.deploy }}
-      version: ${{ steps.version.outputs.version }}
+      change_type: ${{ steps.detect.outputs.change_type }}
+      branch: ${{ steps.detect.outputs.branch }}
+      is_tag: ${{ steps.detect.outputs.is_tag }}
 
     steps:
-      # ✅ FIX 1: Fetch full history (IMPORTANT)
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - id: detect
+        run: |
+          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          
+          # Detect if we are running from a Tag (for promotion)
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+          fi
+
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then TYPE="major"
+          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then TYPE="minor"
+          else TYPE="patch"; fi
+          echo "change_type=$TYPE" >> $GITHUB_OUTPUT
+
+  versioning:
+    needs: setup
+    # Skip if running from an existing tag or not on develop
+    if: github.ref_name == 'develop' && needs.setup.outputs.is_tag == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ✅ Detect change type
-      - name: Detect change type
-        id: type
+      - id: type
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "Manual run detected"
-            TYPE="${{ github.event.inputs.release_type }}"
-            echo "type=$TYPE" >> $GITHUB_OUTPUT
-            echo "deploy=true" >> $GITHUB_OUTPUT
-
+            echo "type=${{ github.event.inputs.release_type }}" >> $GITHUB_OUTPUT
           else
-            MESSAGE=$(git log -1 --pretty=%B)
-            echo "Merge message: $MESSAGE"
-
-            if [[ $MESSAGE == *enhancement* ]]; then
-              echo "type=major" >> $GITHUB_OUTPUT
-              echo "deploy=false" >> $GITHUB_OUTPUT
-            elif [[ $MESSAGE == *feature* ]]; then
-              echo "type=minor" >> $GITHUB_OUTPUT
-              echo "deploy=true" >> $GITHUB_OUTPUT
-            elif [[ $MESSAGE == *bugfix* ]] || [[ $MESSAGE == *hotfix* ]]; then
-              echo "type=patch" >> $GITHUB_OUTPUT
-              echo "deploy=true" >> $GITHUB_OUTPUT
-            else
-              echo "type=patch" >> $GITHUB_OUTPUT
-              echo "deploy=true" >> $GITHUB_OUTPUT
-            fi
+            echo "type=${{ needs.setup.outputs.change_type }}" >> $GITHUB_OUTPUT
           fi
 
-      # ✅ FIX 2: Reliable latest tag detection
-      - name: Get latest tag
-        id: get_tag
+      - id: calc
         run: |
           git fetch --tags --force
+          LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
+          if [ -z "$LAST_TAG" ]; then LAST_TAG="v1.0.0"; fi
 
-          TAG=$(git tag --sort=-v:refname | head -n 1)
-
-          if [ -z "$TAG" ]; then
-            TAG="v1.0.0"
-          fi
-
-          echo "Latest tag: $TAG"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-      # 🔢 Bump version
-      - name: Bump version
-        id: version
-        run: |
-          TAG=${{ steps.get_tag.outputs.tag }}
-          VERSION=${TAG#v}
-
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          VERSION=${LAST_TAG#v}
+          BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
           TYPE=${{ steps.type.outputs.type }}
 
           if [[ "$TYPE" == "patch" ]]; then
             PATCH=$((PATCH+1))
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$(date +%Y-%m-%d)"
           elif [[ "$TYPE" == "minor" ]]; then
-            MINOR=$((MINOR+1))
-            PATCH=0
+            NEW_TAG="v$MAJOR.$((MINOR+1)).0"
           elif [[ "$TYPE" == "major" ]]; then
-            MAJOR=$((MAJOR+1))
-            MINOR=0
-            PATCH=0
+            NEW_TAG="v$((MAJOR+1)).0.0"
           fi
 
-          NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
-          echo "New version: $NEW_VERSION"
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-
-      # ✅ FIX 3: Prevent duplicate tag push issues
-      - name: Create Git Tag
-        if: steps.type.outputs.deploy == 'true' || github.event_name == 'workflow_dispatch'
-        run: |
-          TAG=${{ steps.version.outputs.version }}
-
-          if git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
-            echo "Tag already exists in remote, skipping"
-            exit 0
-          fi
-
+          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
+          
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git tag -a $TAG -m "Release $TAG"
-          git push origin $TAG
+          
+          # Safety check: Only push if tag doesn't exist
+          if ! git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
+            git push origin "$NEW_TAG"
+          fi
 
-  build:
+  build-and-deploy:
+    needs: [setup, versioning]
+    if: always()
     runs-on: ubuntu-latest
-    needs: versioning
-
-    # 🚫 Skip enhancement(auto), ✅ allow manual
-    if: needs.versioning.outputs.deploy == 'true' || github.event_name == 'workflow_dispatch'
-
-    strategy:
-      matrix:
-        node-version: [22.x]
-
+    permissions:
+      contents: write
     steps:
-      # ✅ Also safer to fetch full history here
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+      - name: Sync and Promote
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          
+          TARGET="${{ needs.setup.outputs.branch }}"
+          SOURCE_REF="${{ github.ref_name }}"
 
-      - run: npm ci
-      - run: npm run build --if-present
-      - run: npm test
+          if [[ "$TARGET" != "develop" ]]; then
+            echo "🚀 Promoting $SOURCE_REF to $TARGET"
+            git fetch --all
+            git checkout $TARGET
+            git merge $SOURCE_REF --no-ff -m "chore: promote $SOURCE_REF to $TARGET"
+            git push origin $TARGET
+          fi
+
+      - name: Build and Push Docker
+        run: |
+          # Use version from versioning job OR the tag name from the UI
+          FINAL_TAG="${{ needs.versioning.outputs.version || github.ref_name }}"
+          TARGET="${{ needs.setup.outputs.branch }}"
+
+          echo "Deploying Version: $FINAL_TAG to $TARGET"
+          
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+          # 🔥 Dynamic repo selection based on branch
+          if [[ "$TARGET" == "develop" ]]; then
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo"
+          elif [[ "$TARGET" == "stage" ]]; then
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
+          elif [[ "$TARGET" == "master" ]]; then
+            IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
+          fi
+
+          echo "Using IMAGE: $IMAGE"
+
+          docker build -t $IMAGE:$FINAL_TAG .
+          docker push $IMAGE:$FINAL_TAG
