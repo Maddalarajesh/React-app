@@ -11,7 +11,7 @@ on:
       branch:
         description: "Select destination branch"
         required: true
-        default: "stage"
+        default: "qa"
         type: choice
         options: [develop, qa, master]
       release_type:
@@ -108,9 +108,9 @@ jobs:
   build-and-deploy:
     needs: [setup, versioning]
     if: always()
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
