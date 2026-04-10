@@ -145,7 +145,7 @@ jobs:
           # 🔥 Dynamic repo selection based on branch
           if [[ "$TARGET" == "develop" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo"
-          elif [[ "$TARGET" == "stage" ]]; then
+          elif [[ "$TARGET" == "qa" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
           elif [[ "$TARGET" == "master" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
