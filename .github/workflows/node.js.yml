@@ -1,67 +1,60 @@
-name: CI-CD (Versioning + DockerHub)
+name: CI-CD (Final Stable Versioning + Safe Deploy)
+
+permissions:
+  contents: write
 
 on:
   push:
-    branches: [develop, qa, master]
+    branches:
+      - sprint/*
+      - develop
 
   workflow_dispatch:
     inputs:
-      branch:
-        description: "Select destination branch"
+      environment:
+        description: "Select environment"
         required: true
-        default: "qa"
         type: choice
-        options: [develop, qa, master]
+        options: [develop, stage, prod]
 
-      release_type:
-        description: "Select release type (Only for Develop)"
+      version:
+        description: "Enter version to deploy"
         required: true
-        default: "patch"
-        type: choice
-        options: [patch, minor, major]
 
 jobs:
 
+  # =========================
+  # 🧠 SETUP
+  # =========================
   setup:
     runs-on: ubuntu-latest
     outputs:
-      change_type: ${{ steps.detect.outputs.change_type }}
       branch: ${{ steps.detect.outputs.branch }}
-      is_tag: ${{ steps.detect.outputs.is_tag }}
 
     steps:
       - uses: actions/checkout@v4
 
       - id: detect
         run: |
-          BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-          
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "is_tag=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_tag=false" >> $GITHUB_OUTPUT
-          fi
-
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-
-          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
-            TYPE="major"
-          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
-            TYPE="minor"
-          else
-            TYPE="patch"
-          fi
-
-          echo "change_type=$TYPE" >> $GITHUB_OUTPUT
+          echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
 
 
+  # =========================
+  # 🚀 VERSIONING (ONLY ON PUSH)
+  # =========================
   versioning:
     needs: setup
-    if: github.ref_name == 'develop' && needs.setup.outputs.is_tag == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
+    # 🔥 CRITICAL FIX: run only on push (NOT on deploy)
+    if: |
+      github.event_name == 'push' &&
+      (
+        startsWith(github.ref_name, 'sprint/') ||
+        github.ref_name == 'develop'
+      )
 
     outputs:
       version: ${{ steps.calc.outputs.version }}
@@ -71,36 +64,77 @@ jobs:
         with:
           fetch-depth: 0
 
-      - id: type
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "type=${{ github.event.inputs.release_type }}" >> $GITHUB_OUTPUT
-          else
-            echo "type=${{ needs.setup.outputs.change_type }}" >> $GITHUB_OUTPUT
-          fi
-
       - id: calc
         run: |
           git fetch --tags --force
 
           LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
+
           if [ -z "$LAST_TAG" ]; then
             LAST_TAG="v1.0.0"
           fi
 
-          VERSION=${LAST_TAG#v}
-          BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+          # Remove date suffix if exists
+          BASE_VERSION=$(echo $LAST_TAG | cut -d'-' -f1)
+          VERSION=${BASE_VERSION#v}
 
-          TYPE=${{ steps.type.outputs.type }}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
 
-          if [[ "$TYPE" == "patch" ]]; then
+          BRANCH="${{ github.ref_name }}"
+
+          # =========================
+          # 🧠 Detect commit type
+          # =========================
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+
+          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
+            TYPE="major"
+          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
+            TYPE="minor"
+          elif [[ "$COMMIT_MSG" == *"hotfix/"* || "$COMMIT_MSG" == *"bugfix/"* || "$COMMIT_MSG" == *"patchfix/"* ]]; then
+            TYPE="patch"
+          else
+            TYPE="patch"
+          fi
+
+          echo "Detected TYPE=$TYPE"
+
+          # =========================
+          # 🧩 SPRINT VERSIONING
+          # =========================
+          if [[ "$BRANCH" == sprint/* ]]; then
+
+            if [[ "$TYPE" == "major" ]]; then
+              MAJOR=$((MAJOR+1))
+              MINOR=0
+              PATCH=0
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+            elif [[ "$TYPE" == "minor" ]]; then
+              MINOR=$((MINOR+1))
+              PATCH=0
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+            else
+              PATCH=$((PATCH+1))
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+            fi
+
+          # =========================
+          # 🔥 FINAL VERSION (AFTER MERGE)
+          # =========================
+          elif [[ "$BRANCH" == "develop" ]]; then
+
+            DATE=$(date +%Y-%m-%d)
+
             PATCH=$((PATCH+1))
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$(date +%Y-%m-%d)"
-          elif [[ "$TYPE" == "minor" ]]; then
-            NEW_TAG="v$MAJOR.$((MINOR+1)).0"
-          elif [[ "$TYPE" == "major" ]]; then
-            NEW_TAG="v$((MAJOR+1)).0.0"
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
+          fi
+
+          # 🔥 SAFETY FIX
+          if [[ -z "$NEW_TAG" ]]; then
+            echo "❌ NEW_TAG is empty. Skipping..."
+            exit 0
           fi
 
           echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
@@ -114,52 +148,41 @@ jobs:
           fi
 
 
-  build-and-deploy:
-    needs: [setup, versioning]
-    if: always()
+  # =========================
+  # 🎯 DEPLOY (MANUAL ONLY)
+  # =========================
+  deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # =========================
-      # ❌ REMOVED: Sync and Promote (git merge)
-      # =========================
-
-      - name: Tag Validation (NO GIT MERGE - TAG PROMOTION ONLY)
+      - name: Validate Inputs
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
+          if [[ -z "${{ github.event.inputs.version }}" ]]; then
+            echo "❌ Version is required"
+            exit 1
+          fi
 
-          TARGET="${{ needs.setup.outputs.branch }}"
-          SOURCE_REF="${{ github.ref_name }}"
-
-          echo "🚀 Deploying from $SOURCE_REF to $TARGET"
-
-          echo "✔ Using TAG-based promotion (NO CODE SYNC / NO MERGE)"
-
-      - name: Build and Push Docker
+      - name: Deploy
         run: |
-          FINAL_TAG="${{ needs.versioning.outputs.version || github.ref_name }}"
-          TARGET="${{ needs.setup.outputs.branch }}"
+          VERSION="${{ github.event.inputs.version }}"
+          ENV="${{ github.event.inputs.environment }}"
 
-          echo "Deploying Version: $FINAL_TAG to $TARGET"
+          echo "🚀 Deploying $VERSION to $ENV"
 
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-          if [[ "$TARGET" == "develop" ]]; then
+          if [[ "$ENV" == "develop" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo"
-          elif [[ "$TARGET" == "qa" ]]; then
+          elif [[ "$ENV" == "stage" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
-          elif [[ "$TARGET" == "master" ]]; then
+          elif [[ "$ENV" == "prod" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
           fi
 
-          echo "Using IMAGE: $IMAGE"
+          docker pull $IMAGE:$VERSION || echo "Building image..."
 
-          docker build -t $IMAGE:$FINAL_TAG .
-          docker push $IMAGE:$FINAL_TAG
+          docker build -t $IMAGE:$VERSION .
+          docker push $IMAGE:$VERSION
