@@ -7,7 +7,7 @@ function App() {
       <header className="App-header">
         <img src={logo} className="App-logo" alt="logo" />
         <p>
-          testing the frontend react code!
+          latest sprint release tags!
         </p>
         <a
           className="App-link"
