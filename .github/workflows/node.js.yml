@@ -2,7 +2,7 @@ name: CI-CD (Versioning + DockerHub)
 
 on:
   push:
-    branches: [develop, qa, master]
+    branches: [sprint/13-04-2026]
 
   workflow_dispatch:
     inputs:
