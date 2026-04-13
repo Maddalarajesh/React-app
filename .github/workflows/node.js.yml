@@ -1,4 +1,4 @@
-name: CI-CD (Auto Final Version After Merge)
+name: CI-CD (Smart Versioning + Auto Final Release)
 
 permissions:
   contents: write
@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Select environment (for deploy)"
+        description: "Select environment"
         required: true
         type: choice
         options: [develop, stage, prod]
@@ -66,6 +66,7 @@ jobs:
             LAST_TAG="v1.0.0"
           fi
 
+          # Remove date suffix if exists
           BASE_VERSION=$(echo $LAST_TAG | cut -d'-' -f1)
           VERSION=${BASE_VERSION#v}
 
@@ -74,16 +75,48 @@ jobs:
           BRANCH="${{ github.ref_name }}"
 
           # =========================
-          # 🧩 SPRINT VERSION
+          # 🧠 Detect commit type
           # =========================
-          if [[ "$BRANCH" == sprint/* ]]; then
-            PATCH=$((PATCH+1))
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+
+          if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
+            TYPE="major"
+          elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
+            TYPE="minor"
+          elif [[ "$COMMIT_MSG" == *"hotfix/"* || "$COMMIT_MSG" == *"bugfix/"* || "$COMMIT_MSG" == *"patchfix/"* ]]; then
+            TYPE="patch"
+          else
+            TYPE="patch"
+          fi
+
+          echo "Detected TYPE=$TYPE"
 
           # =========================
-          # 🔥 FINAL VERSION (AUTO after merge)
+          # 🧩 SPRINT VERSIONING
+          # =========================
+          if [[ "$BRANCH" == sprint/* ]]; then
+
+            if [[ "$TYPE" == "major" ]]; then
+              MAJOR=$((MAJOR+1))
+              MINOR=0
+              PATCH=0
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+            elif [[ "$TYPE" == "minor" ]]; then
+              MINOR=$((MINOR+1))
+              PATCH=0
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+
+            else
+              PATCH=$((PATCH+1))
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+            fi
+
+          # =========================
+          # 🔥 FINAL VERSION (AUTO AFTER MERGE)
           # =========================
           elif [[ "$BRANCH" == "develop" ]]; then
+
             DATE=$(date +%Y-%m-%d)
 
             PATCH=$((PATCH+1))
@@ -110,6 +143,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate Inputs
+        run: |
+          if [[ -z "${{ github.event.inputs.version }}" ]]; then
+            echo "❌ Version is required"
+            exit 1
+          fi
 
       - name: Deploy
         run: |
