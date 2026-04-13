@@ -1,4 +1,4 @@
-name: CI-CD (Final Stable Versioning + Safe Deploy)
+name: CI-CD (Final Versioning + Patch Date + Smart Deploy)
 
 permissions:
   contents: write
@@ -15,11 +15,11 @@ on:
         description: "Select environment"
         required: true
         type: choice
-        options: [develop, stage, prod]
+        options: [develop, qa, master]
 
       version:
-        description: "Enter version to deploy"
-        required: true
+        description: "Optional: Enter version (leave empty for latest)"
+        required: false
 
 jobs:
 
@@ -48,7 +48,6 @@ jobs:
     permissions:
       contents: write
 
-    # 🔥 CRITICAL FIX: run only on push (NOT on deploy)
     if: |
       github.event_name == 'push' &&
       (
@@ -56,15 +55,12 @@ jobs:
         github.ref_name == 'develop'
       )
 
-    outputs:
-      version: ${{ steps.calc.outputs.version }}
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - id: calc
+      - name: Calculate Version
         run: |
           git fetch --tags --force
 
@@ -81,23 +77,22 @@ jobs:
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
 
           BRANCH="${{ github.ref_name }}"
+          COMMIT_MSG=$(git log -1 --pretty=%B)
 
           # =========================
           # 🧠 Detect commit type
           # =========================
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-
           if [[ "$COMMIT_MSG" == *"enhancement/"* ]]; then
             TYPE="major"
           elif [[ "$COMMIT_MSG" == *"feature/"* ]]; then
             TYPE="minor"
-          elif [[ "$COMMIT_MSG" == *"hotfix/"* || "$COMMIT_MSG" == *"bugfix/"* || "$COMMIT_MSG" == *"patchfix/"* ]]; then
-            TYPE="patch"
           else
             TYPE="patch"
           fi
 
           echo "Detected TYPE=$TYPE"
+
+          DATE=$(date +%Y-%m-%d)
 
           # =========================
           # 🧩 SPRINT VERSIONING
@@ -117,27 +112,26 @@ jobs:
 
             else
               PATCH=$((PATCH+1))
-              NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+              NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"   # ✅ PATCH WITH DATE
             fi
 
           # =========================
-          # 🔥 FINAL VERSION (AFTER MERGE)
+          # 🔥 FINAL VERSION (DEVELOP)
           # =========================
           elif [[ "$BRANCH" == "develop" ]]; then
-
-            DATE=$(date +%Y-%m-%d)
-
             PATCH=$((PATCH+1))
-            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"
+            NEW_TAG="v$MAJOR.$MINOR.$PATCH-$DATE"     # ✅ FINAL WITH DATE
           fi
 
-          # 🔥 SAFETY FIX
+          # =========================
+          # ❌ SAFETY CHECK
+          # =========================
           if [[ -z "$NEW_TAG" ]]; then
-            echo "❌ NEW_TAG is empty. Skipping..."
+            echo "❌ NEW_TAG empty, skipping"
             exit 0
           fi
 
-          echo "version=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "Creating tag: $NEW_TAG"
 
           git config user.name "github-actions"
           git config user.email "actions@github.com"
@@ -149,7 +143,7 @@ jobs:
 
 
   # =========================
-  # 🎯 DEPLOY (MANUAL ONLY)
+  # 🚀 DEPLOY (SMART)
   # =========================
   deploy:
     runs-on: ubuntu-latest
@@ -157,17 +151,32 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Validate Inputs
+      - name: Resolve Version
+        id: version
         run: |
+          git fetch --tags --force
+
           if [[ -z "${{ github.event.inputs.version }}" ]]; then
-            echo "❌ Version is required"
+            echo "⚡ No version provided → picking latest"
+            VERSION=$(git tag --sort=-v:refname | head -n 1)
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+
+          if [[ -z "$VERSION" ]]; then
+            echo "❌ No version found"
             exit 1
           fi
 
+          echo "resolved=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using version: $VERSION"
+
       - name: Deploy
         run: |
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${{ steps.version.outputs.resolved }}"
           ENV="${{ github.event.inputs.environment }}"
 
           echo "🚀 Deploying $VERSION to $ENV"
