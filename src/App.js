@@ -7,7 +7,7 @@ function App() {
       <header className="App-header">
         <img src={logo} className="App-logo" alt="logo" />
         <p>
-          testing the react code!
+          testing the frontend react code!
         </p>
         <a
           className="App-link"
