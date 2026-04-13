@@ -7,7 +7,7 @@ function App() {
       <header className="App-header">
         <img src={logo} className="App-logo" alt="logo" />
         <p>
-          Welcome G3 innovation pvt ltd for sprint!
+          Welcome to sprint!
         </p>
         <a
           className="App-link"
