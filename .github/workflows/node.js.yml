@@ -185,9 +185,9 @@ jobs:
 
           if [[ "$ENV" == "develop" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/aesthisia-demo"
-          elif [[ "$ENV" == "stage" ]]; then
+          elif [[ "$ENV" == "qa" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/stage-test"
-          elif [[ "$ENV" == "prod" ]]; then
+          elif [[ "$ENV" == "master" ]]; then
             IMAGE="${{ secrets.DOCKER_USERNAME }}/prod-test"
           fi
 
