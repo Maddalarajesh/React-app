@@ -2,6 +2,12 @@ import logo from './logo.svg';
 import './App.css';
 
 function App() {
+
+  // 👇 ADD THIS (no test for it)
+  function untestedFunction() {
+    return "Not covered";
+  }
+
   return (
     <div className="App">
       <header className="App-header">
